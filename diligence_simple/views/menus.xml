@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <menuitem id="menu_diligence_root" name="Diligences"
+              web_icon="diligence_simple,static/description/icon.svg"
+              sequence="25"
+              groups="project.group_project_user"/>
+
+    <menuitem id="menu_diligence_today" name="Aujourd'hui"
+              parent="menu_diligence_root" action="action_diligence_today" sequence="10"/>
+
+    <menuitem id="menu_diligence_my" name="Mes diligences"
+              parent="menu_diligence_root" action="action_diligence_my" sequence="20"/>
+
+    <menuitem id="menu_diligence_all" name="Toutes les diligences"
+              parent="menu_diligence_root" action="action_diligence_all" sequence="30"/>
+
+    <menuitem id="menu_diligence_calendar" name="Calendrier"
+              parent="menu_diligence_root" action="action_diligence_calendar" sequence="40"/>
+
+    <menuitem id="menu_diligence_report" name="Rapports"
+              parent="menu_diligence_root" action="action_diligence_report" sequence="50"/>
+
+</odoo>
