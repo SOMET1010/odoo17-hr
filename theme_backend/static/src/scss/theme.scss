@@ -1,0 +1,75 @@
+// =====================================================================
+// RETOUCHES FINALES — chargé après tout le style standard d'Odoo.
+// Règles ciblées et volontairement légères ; tout bloc optionnel est
+// commenté pour être activé au besoin.
+// =====================================================================
+
+// ---- Police personnalisée (optionnel) --------------------------------
+// 1) Déposez les .woff2 dans theme_backend/static/fonts/
+// 2) Décommentez et adaptez :
+// @font-face {
+//     font-family: "MaPolice";
+//     src: url("/theme_backend/static/fonts/MaPolice-Regular.woff2") format("woff2");
+//     font-weight: 400;
+//     font-display: swap;
+// }
+// @font-face {
+//     font-family: "MaPolice";
+//     src: url("/theme_backend/static/fonts/MaPolice-Bold.woff2") format("woff2");
+//     font-weight: 700;
+//     font-display: swap;
+// }
+// 3) Puis ajoutez "MaPolice" en tête de $font-family-sans-serif
+//    dans bootstrap_overrides.scss.
+
+// ---- Barre de navigation --------------------------------------------
+.o_main_navbar {
+    // Séparation nette avec le contenu
+    border-bottom: 1px solid rgba(0, 0, 0, .08);
+}
+
+// ---- Cartes kanban (toutes applications) -----------------------------
+.o_kanban_renderer .o_kanban_record {
+    border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .06);
+    transition: box-shadow .15s ease;
+
+    &:hover {
+        box-shadow: 0 8px 20px rgba(16, 24, 40, .13);
+    }
+}
+
+// ---- Vues liste ------------------------------------------------------
+.o_list_view {
+    // En-têtes de colonnes : capitales discrètes
+    thead th {
+        font-size: .72rem;
+        text-transform: uppercase;
+        letter-spacing: .05em;
+    }
+
+    // Survol de ligne plus perceptible
+    tbody > tr:hover {
+        background-color: rgba(0, 0, 0, .025);
+    }
+}
+
+// ---- Formulaires -----------------------------------------------------
+// Feuille en "carte" : bord arrondi + ombre douce.
+.o_form_view .o_form_sheet {
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(16, 24, 40, .06);
+}
+
+// ---- Étiquettes (tags) en pilules ------------------------------------
+.o_field_many2many_tags .o_tag,
+.o_tag {
+    border-radius: 99px;
+}
+
+// ---- Barre d'état (étapes) en pilules --------------------------------
+// Optionnel : décommentez pour des étapes arrondies façon "chips".
+// .o_statusbar_status .o_arrow_button {
+//     border-radius: 99px !important;
+//     margin-left: 4px;
+// }
