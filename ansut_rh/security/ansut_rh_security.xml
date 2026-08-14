@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="group_ansut_derogation_dg" model="res.groups">
+        <field name="name">ANSUT : dérogation cumul congés (décision DG)</field>
+        <field name="category_id" ref="base.module_category_human_resources"/>
+        <field name="comment">Autorise la validation d'allocations portant le cumul de congés dus au-delà de 45 jours (règles 7 et 8 de la procédure ANSUT-RH-PR-001 : rachat/dépassement sur décision du Directeur Général).</field>
+    </record>
+
+</odoo>

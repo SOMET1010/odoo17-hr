@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ============================================================ -->
+    <!-- Attestation de départ en congé (RH-PR-001, étape 8)          -->
+    <!-- ============================================================ -->
+    <template id="report_attestation_depart">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="web.external_layout">
+                    <div class="page">
+                        <h3 class="text-center mt-5 mb-4">ATTESTATION DE DÉPART EN CONGÉ</h3>
+                        <p class="mt-4">
+                            Nous soussignés, <strong t-field="o.company_id.name"/>,
+                            attestons que :
+                        </p>
+                        <p class="ms-4">
+                            <strong t-field="o.employee_id.name"/>
+                            <t t-if="o.employee_id.job_title">, <span t-field="o.employee_id.job_title"/></t>
+                            <t t-if="o.employee_id.department_id">, <span t-field="o.employee_id.department_id.name"/></t>,
+                        </p>
+                        <p>
+                            part en congé
+                            du <strong t-field="o.date_from" t-options='{"widget": "date"}'/>
+                            au <strong t-field="o.date_to" t-options='{"widget": "date"}'/>,
+                            soit <strong t-field="o.number_of_days"/> jour(s)
+                            (<span t-field="o.holiday_status_id.name"/>).
+                        </p>
+                        <p>
+                            La reprise de service est prévue le premier jour ouvrable
+                            suivant la fin du congé. À son retour, l'intéressé(e) fera
+                            viser la présente attestation par son supérieur hiérarchique
+                            avec la mention « reprise de service le [date effective] »
+                            et la transmettra à la DRHCom.
+                        </p>
+                        <p class="mt-4">
+                            En foi de quoi, la présente attestation lui est délivrée
+                            pour servir et valoir ce que de droit.
+                        </p>
+                        <div class="row mt-5">
+                            <div class="col-6">
+                                <p><strong>Le/La salarié(e)</strong></p>
+                                <p class="mt-5">_______________________</p>
+                            </div>
+                            <div class="col-6 text-end">
+                                <p><strong>Le Directeur des Ressources Humaines
+                                    et Communication</strong></p>
+                                <p class="mt-5">_______________________</p>
+                            </div>
+                        </div>
+                        <div class="row mt-5">
+                            <div class="col-12">
+                                <p><strong>Visa de reprise du supérieur hiérarchique</strong>
+                                    — reprise de service le : ____ / ____ / ________</p>
+                                <p class="mt-4">Signature : _______________________</p>
+                            </div>
+                        </div>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_attestation_depart" model="ir.actions.report">
+        <field name="name">Attestation de départ en congé</field>
+        <field name="model">hr.leave</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">ansut_rh.report_attestation_depart</field>
+        <field name="report_file">ansut_rh.report_attestation_depart</field>
+        <field name="print_report_name">'Attestation de depart - %s' % (object.employee_id.name)</field>
+        <field name="binding_model_id" ref="hr_holidays.model_hr_leave"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Attestation de reprise de service (RH-PR-001, étape 11)      -->
+    <!-- ============================================================ -->
+    <template id="report_attestation_reprise">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="web.external_layout">
+                    <div class="page">
+                        <h3 class="text-center mt-5 mb-4">ATTESTATION DE REPRISE DE SERVICE</h3>
+                        <p class="mt-4">
+                            Nous soussignés, <strong t-field="o.company_id.name"/>,
+                            attestons que :
+                        </p>
+                        <p class="ms-4">
+                            <strong t-field="o.employee_id.name"/>
+                            <t t-if="o.employee_id.job_title">, <span t-field="o.employee_id.job_title"/></t>
+                            <t t-if="o.employee_id.department_id">, <span t-field="o.employee_id.department_id.name"/></t>,
+                        </p>
+                        <p>
+                            de retour de congé
+                            (du <span t-field="o.date_from" t-options='{"widget": "date"}'/>
+                            au <span t-field="o.date_to" t-options='{"widget": "date"}'/>),
+                            a effectivement repris le service le
+                            <strong t-field="o.ansut_reprise_date" t-options='{"widget": "date"}'/>.
+                        </p>
+                        <p>
+                            Une copie de la présente attestation est transmise au
+                            service en charge de la paie.
+                        </p>
+                        <p class="mt-4">
+                            En foi de quoi, la présente attestation lui est délivrée
+                            pour servir et valoir ce que de droit.
+                        </p>
+                        <div class="row mt-5">
+                            <div class="col-12 text-end">
+                                <p><strong>Le Directeur des Ressources Humaines
+                                    et Communication</strong></p>
+                                <p class="mt-5">_______________________</p>
+                            </div>
+                        </div>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_attestation_reprise" model="ir.actions.report">
+        <field name="name">Attestation de reprise de service</field>
+        <field name="model">hr.leave</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">ansut_rh.report_attestation_reprise</field>
+        <field name="report_file">ansut_rh.report_attestation_reprise</field>
+        <field name="print_report_name">'Attestation de reprise - %s' % (object.employee_id.name)</field>
+        <field name="binding_model_id" ref="hr_holidays.model_hr_leave"/>
+        <field name="binding_type">report</field>
+    </record>
+
+</odoo>

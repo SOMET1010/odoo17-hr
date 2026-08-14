@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="leave_refuse_wizard_view_form" model="ir.ui.view">
+        <field name="name">ansut.leave.refuse.wizard.form</field>
+        <field name="model">ansut.leave.refuse.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Refuser la demande">
+                <group>
+                    <field name="leave_id" readonly="1"/>
+                    <field name="reason"
+                           placeholder="Motif du refus (obligatoire) — il sera communiqué au salarié et archivé dans la demande…"/>
+                </group>
+                <footer>
+                    <button name="action_refuse" type="object" string="Refuser"
+                            class="btn-primary" data-hotkey="q"/>
+                    <button string="Annuler" special="cancel" data-hotkey="x"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_leave_refuse_wizard" model="ir.actions.act_window">
+        <field name="name">Refuser avec motif</field>
+        <field name="res_model">ansut.leave.refuse.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="context">{'default_leave_id': active_id}</field>
+    </record>
+
+</odoo>

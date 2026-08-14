@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Demande de congé/absence : reprise de service, refus motivé -->
+    <record id="hr_leave_view_form_inherit_ansut" model="ir.ui.view">
+        <field name="name">hr.leave.form.ansut</field>
+        <field name="model">hr.leave</field>
+        <field name="inherit_id" ref="hr_holidays.hr_leave_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_ansut_confirmer_reprise" type="object"
+                        string="Confirmer la reprise"
+                        class="btn-primary"
+                        invisible="state != 'validate' or ansut_reprise_date"
+                        groups="hr_holidays.group_hr_holidays_user"/>
+                <button name="%(ansut_rh.action_leave_refuse_wizard)d" type="action"
+                        string="Refuser avec motif"
+                        invisible="state not in ('confirm', 'validate1', 'validate')"
+                        groups="hr_holidays.group_hr_holidays_responsible"/>
+            </xpath>
+            <xpath expr="//sheet" position="inside">
+                <group string="Suivi ANSUT" name="ansut_suivi"
+                       invisible="not ansut_reprise_date and not ansut_refuse_reason">
+                    <field name="ansut_reprise_date" readonly="1"/>
+                    <field name="ansut_refuse_reason" readonly="1"/>
+                </group>
+                <field name="ansut_alerte_reprise" invisible="1"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Type de congé : drapeaux ANSUT -->
+    <record id="edit_holiday_status_form_inherit_ansut" model="ir.ui.view">
+        <field name="name">hr.leave.type.form.ansut</field>
+        <field name="model">hr.leave.type</field>
+        <field name="inherit_id" ref="hr_holidays.edit_holiday_status_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <group string="Règles ANSUT" name="ansut_rules">
+                    <field name="ansut_annual"/>
+                    <field name="ansut_absence"/>
+                    <field name="ansut_max_days" invisible="not ansut_absence"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- RH-PR-002 : registre des absences -->
+    <record id="action_ansut_registre_absences" model="ir.actions.act_window">
+        <field name="name">Registre des absences</field>
+        <field name="res_model">hr.leave</field>
+        <field name="view_mode">tree,form,pivot</field>
+        <field name="domain">[('holiday_status_id.ansut_absence', '=', True)]</field>
+        <field name="context">{'search_default_year': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Aucune absence enregistrée</p>
+            <p>Toutes les autorisations d'absence (hors congés) apparaissent ici,
+               conformément à la procédure ANSUT-RH-PR-002.</p>
+        </field>
+    </record>
+
+    <menuitem id="menu_ansut_registre_absences" name="Registre des absences"
+              parent="hr_holidays.menu_hr_holidays_root"
+              action="action_ansut_registre_absences" sequence="90"
+              groups="hr_holidays.group_hr_holidays_user"/>
+
+</odoo>
