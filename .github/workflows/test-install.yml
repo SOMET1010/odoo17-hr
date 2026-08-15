@@ -5,7 +5,13 @@ on: [push, pull_request]
 jobs:
   install:
     runs-on: ubuntu-latest
-    container: odoo:17
+    container:
+      image: odoo:17
+      # L'image odoo tourne sous l'utilisateur « odoo », qui n'a pas le droit
+      # d'écrire dans les dossiers que le runner monte sous /__w. Sans cette
+      # option, actions/checkout meurt en EACCES avant même de cloner : le
+      # travail échouait donc sans jamais atteindre l'installation.
+      options: --user root
     services:
       postgres:
         image: postgres:15
@@ -21,9 +27,9 @@ jobs:
 
       - name: Installer les modules ANSUT dans une base neuve
         run: |
-          # Le conteneur tourne en root alors que l'image attend l'utilisateur
-          # odoo : on écrit le répertoire de données dans le workspace plutôt
-          # que dans /var/lib/odoo, dont les droits appartiennent à odoo.
+          # Le conteneur tourne en root (voir l'option ci-dessus) alors que
+          # l'image attend l'utilisateur odoo : on écrit le répertoire de
+          # données dans le workspace plutôt que dans /var/lib/odoo.
           mkdir -p "$GITHUB_WORKSPACE/.odoo-data"
           odoo -d test_ansut --db_host=postgres --db_user=odoo --db_password=odoo \
             --data-dir="$GITHUB_WORKSPACE/.odoo-data" \
