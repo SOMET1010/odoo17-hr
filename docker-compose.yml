@@ -1,0 +1,45 @@
+# Instance Odoo 17 locale pour faire tourner les modules ANSUT.
+#
+# À la différence du workflow .github/workflows/test-install.yml, qui vérifie
+# seulement que les modules s'installent puis s'arrête, cette pile reste
+# allumée : interface accessible sur http://localhost:8069, base et filestore
+# persistants entre deux démarrages.
+#
+# Voir DOCKER.md pour la mise en route et le branchement de l'atelier React.
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: postgres
+    volumes:
+      - odoo-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  odoo:
+    image: odoo:17
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8069:8069"
+      # Communication temps réel (chatter, notifications)
+      - "8072:8072"
+    volumes:
+      # Filestore et sessions : sans ce volume, les pièces jointes et la
+      # session sont perdues à chaque recréation du conteneur.
+      - odoo-data:/var/lib/odoo
+      # Les modules du dépôt, en lecture seule : Odoo ne doit pas les modifier.
+      - ./:/mnt/extra-addons:ro
+      - ./.docker/odoo.conf:/etc/odoo/odoo.conf:ro
+    restart: unless-stopped
+
+volumes:
+  odoo-db:
+  odoo-data:
