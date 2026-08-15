@@ -47,4 +47,6 @@ jobs:
 
       - name: Éteindre la pile
         if: always()
-        run: docker compose down -v || true
+        # Le profil doit être nommé, sinon le conteneur du service reste
+        # allumé et retient le volume et le réseau.
+        run: docker compose --profile installateur down -v || true
