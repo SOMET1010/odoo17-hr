@@ -177,8 +177,12 @@ if docker compose run --rm odoo odoo -d "$DB" \
      -i diligence_simple,theme_backend,ansut_rh --stop-after-init >"$TRAVAIL/install.log" 2>&1; then
   succes "L'installation se termine avec le code 0."
 else
-  echec "L'installation échoue (code $?). Voir $TRAVAIL/install.log — 20 dernières lignes :"
-  tail -20 "$TRAVAIL/install.log" | sed 's/^/      /'
+  echec "L'installation échoue. Cause remontée par Odoo :"
+  # On isole l'erreur utile plutôt que la fin du journal, souvent occupée par
+  # la séquence d'arrêt.
+  grep -iE "ParseError|ValidationError|Error while|must be present|Missing|CRITICAL|^odoo\\.|Traceback" \\
+    "$TRAVAIL/install.log" | tail -12 | sed 's/^/      /'
+  grep -A 8 "View error context" "$TRAVAIL/install.log" | tail -12 | sed 's/^/      /'
 fi
 
 # Point de surveillance : la base a-t-elle réellement été créée ?
@@ -194,6 +198,12 @@ if [[ "${installes:-0}" == "3" ]]; then
   succes "Les 3 modules sont à l'état « installed »."
 else
   echec "Modules installés : ${installes:-0}/3."
+  # Nomme précisément les modules qui manquent à l'appel.
+  for module in ansut_rh diligence_simple theme_backend; do
+    etat=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \\
+      "select coalesce(max(state),'absent') from ir_module_module where name='$module'" 2>/dev/null | tr -d '[:space:]')
+    info "  $module : ${etat:-inconnu}"
+  done
 fi
 
 # ------------------------------------------------------------------ étape 4
