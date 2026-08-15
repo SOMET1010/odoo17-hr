@@ -13,6 +13,7 @@ on:
   push:
     branches:
       - claude/odoo-modules-improvement-li5nwi
+      - claude/odoo-react-alchemy-handoff-hmig21
     paths:
       - '.docker/**'
       - 'docker-compose.yml'

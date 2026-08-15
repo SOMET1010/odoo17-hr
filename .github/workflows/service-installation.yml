@@ -1,0 +1,26 @@
+name: Recette du service d'installation
+
+# Les barrières de sécurité du service se testent sans Docker ni Odoo : ce
+# passage est court et se joue à chaque modification du service. La preuve
+# de bout en bout, elle, est l'étape 8 de .docker/verifier-runtime.sh.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.docker/service-installation/**'
+      - '.github/workflows/service-installation.yml'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Recette des barrières et de l'API
+        working-directory: .docker/service-installation
+        run: python -m unittest discover -s tests -t . -v

@@ -37,9 +37,41 @@ services:
       - odoo-data:/var/lib/odoo
       # Les modules du dépôt, en lecture seule : Odoo ne doit pas les modifier.
       - ./:/mnt/extra-addons:ro
+      # Les modules déposés par le service d'installation. Volume distinct des
+      # sources Git, et monté en lecture seule ici : seul le service écrit.
+      - addons-installes:/mnt/addons-installes:ro
       - ./.docker/odoo.conf:/etc/odoo/odoo.conf:ro
+    restart: unless-stopped
+
+  # Service privé d'installation de modules. Sous profil : « docker compose
+  # up » ne le démarre pas, il faut le demander explicitement par
+  # « docker compose --profile installateur up -d installateur ».
+  #
+  # Il n'a délibérément pas accès au socket Docker : il écrit un volume et
+  # parle HTTP à Odoo, rien de plus.
+  installateur:
+    build: ./.docker/service-installation
+    profiles: ["installateur"]
+    depends_on:
+      - odoo
+    environment:
+      # À surcharger : le service refuse de démarrer sans clé.
+      CLE_API: ${INSTALLATEUR_CLE_API:-cle-de-developpement}
+      ODOO_URL: http://odoo:8069
+      ODOO_BASE: ${INSTALLATEUR_BASE:-ansut}
+      ODOO_LOGIN: admin
+      ODOO_MOTDEPASSE: admin
+      TAILLE_MAX_MO: "20"
+    ports:
+      - "8090:8090"
+    volumes:
+      - addons-installes:/mnt/addons-installes
+      # Les sources Git en lecture seule : sert uniquement à refuser
+      # l'écrasement d'un module livré par le dépôt.
+      - ./:/mnt/extra-addons:ro
     restart: unless-stopped
 
 volumes:
   odoo-db:
   odoo-data:
+  addons-installes:

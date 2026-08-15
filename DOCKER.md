@@ -92,6 +92,27 @@ son proxy, puis rejouer une lecture **et une écriture** à travers celui-ci. Un
 Le script restaure les fichiers qu'il modifie et éteint la pile en sortant
 (`--keep` pour la laisser allumée). Il rend 0 si tout passe.
 
+## Installer un module sans passer par Git
+
+Un service privé permet de déposer un module en ZIP et de le faire installer
+par Odoo, sans toucher aux sources du dépôt. Il est sous profil Compose :
+`docker compose up` ne le démarre pas.
+
+```bash
+export INSTALLATEUR_CLE_API="une-cle-longue-et-secrete"
+docker compose --profile installateur up -d --build installateur
+
+curl -sS -X POST -H "X-Cle-Api: $INSTALLATEUR_CLE_API" \
+  -H 'Content-Type: application/zip' \
+  --data-binary @mon_module.zip http://localhost:8090/modules
+```
+
+Les modules déposés atterrissent dans le volume `addons-installes`, monté en
+lecture seule côté Odoo : les sources Git restent intouchables, et un envoi
+qui porte le nom d'un module du dépôt est refusé. Le service n'a pas accès au
+socket Docker — voir `.docker/service-installation/README.md` pour le détail
+des barrières.
+
 ## Arrêter et repartir de zéro
 
 ```bash

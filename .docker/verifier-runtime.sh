@@ -52,7 +52,7 @@ nettoyer() {
   restaurer_sources
   if [[ $KEEP -eq 0 ]]; then
     info "Arrêt de la pile (les volumes sont conservés)."
-    docker compose down >/dev/null 2>&1
+    docker compose --profile installateur down >/dev/null 2>&1
   else
     info "Pile laissée allumée (--keep)."
   fi
@@ -352,6 +352,118 @@ else
   else
     ignore "Étape 7 (Python) : chaîne témoin introuvable dans $modele."
   fi
+fi
+
+# ------------------------------------------------------------------ étape 8
+
+titre "Étape 8 — Service d'installation de modules"
+
+INSTALLATEUR_URL=http://localhost:8090
+CLE_RECETTE="cle-de-recette-$$"
+MODULE_RECETTE=module_recette_installateur
+
+# Les archives de recette sont fabriquées ici : on veut éprouver le service
+# sur de vrais ZIP, y compris malveillants, pas sur des cas théoriques.
+creer_zip() {
+  python3 - "$1" "$2" <<'PY'
+import sys, zipfile
+nom, cible = sys.argv[1], sys.argv[2]
+manifeste = (
+    "{'name': 'Module de recette', 'version': '17.0.1.0.0',"
+    " 'depends': ['base'], 'installable': True}"
+)
+with zipfile.ZipFile(cible, 'w') as archive:
+    archive.writestr(nom + '/__manifest__.py', manifeste)
+    archive.writestr(nom + '/__init__.py', '')
+PY
+}
+
+creer_zip_malveillant() {
+  python3 - "$1" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w') as archive:
+    archive.writestr('module_evasion/__manifest__.py', "{'name': 'Evasion'}")
+    archive.writestr('module_evasion/../../evasion.py', "print('dehors')")
+PY
+}
+
+# deposer <zip> <cle> : imprime le code HTTP, corps dans $TRAVAIL/reponse.json
+deposer() {
+  curl -sS -o "$TRAVAIL/reponse.json" -w '%{http_code}' \
+    -X POST -H "X-Cle-Api: $2" -H 'Content-Type: application/zip' \
+    --data-binary "@$1" "$INSTALLATEUR_URL/modules" 2>/dev/null
+}
+
+champ() { python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2],''))" "$1" "$2" 2>/dev/null; }
+
+if INSTALLATEUR_CLE_API="$CLE_RECETTE" docker compose --profile installateur \
+     up -d --build installateur >"$TRAVAIL/installateur.log" 2>&1; then
+  if attendre_http "$INSTALLATEUR_URL/sante" 120; then
+    succes "Le service d'installation répond sur $INSTALLATEUR_URL."
+
+    # --- barrière 1 : sans clé d'API, rien ne passe.
+    creer_zip "$MODULE_RECETTE" "$TRAVAIL/module.zip"
+    code=$(deposer "$TRAVAIL/module.zip" "mauvaise-cle")
+    [[ "$code" == "401" ]] && succes "Dépôt sans clé valide refusé (401)." \
+                           || echec "Dépôt sans clé valide : code $code au lieu de 401."
+
+    # --- barrière 2 : une archive qui tente de sortir de son dossier.
+    creer_zip_malveillant "$TRAVAIL/evasion.zip"
+    code=$(deposer "$TRAVAIL/evasion.zip" "$CLE_RECETTE")
+    [[ "$code" == "400" ]] && succes "Archive avec remontée « ../ » refusée (400)." \
+                           || echec "Archive malveillante : code $code au lieu de 400."
+
+    # --- barrière 3 : on ne remplace pas un module livré par Git.
+    creer_zip "ansut_rh" "$TRAVAIL/ansut.zip"
+    code=$(deposer "$TRAVAIL/ansut.zip" "$CLE_RECETTE")
+    [[ "$code" == "400" ]] && succes "Écrasement d'un module des sources Git refusé (400)." \
+                           || echec "Module des sources Git : code $code au lieu de 400."
+
+    # --- cas nominal : dépôt, installation, état lu dans la base.
+    code=$(deposer "$TRAVAIL/module.zip" "$CLE_RECETTE")
+    if [[ "$code" == "202" ]]; then
+      succes "Dépôt accepté (202)."
+      identifiant=$(champ "$TRAVAIL/reponse.json" id)
+      etat=""
+      for _ in $(seq 1 90); do
+        curl -sS -H "X-Cle-Api: $CLE_RECETTE" -o "$TRAVAIL/etat.json" \
+          "$INSTALLATEUR_URL/modules/$identifiant" 2>/dev/null
+        etat=$(champ "$TRAVAIL/etat.json" etat)
+        [[ "$etat" == "success" || "$etat" == "failed" ]] && break
+        sleep 2
+      done
+
+      if [[ "$etat" == "success" ]]; then
+        succes "Le service rapporte « success »."
+      else
+        echec "Le service rapporte « ${etat:-aucun état} »."
+        champ "$TRAVAIL/etat.json" erreur | sed 's/^/      /'
+      fi
+
+      # Le juge de paix : Odoo lui-même, pas la réponse du service.
+      etat_bd=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \
+        "select state from ir_module_module where name='$MODULE_RECETTE'" 2>/dev/null | tr -d '[:space:]')
+      [[ "$etat_bd" == "installed" ]] && succes "Odoo confirme « $MODULE_RECETTE » installé." \
+                                      || echec "Dans la base, « $MODULE_RECETTE » est à l'état « ${etat_bd:-absent} »."
+    else
+      echec "Dépôt du module valide : code $code au lieu de 202."
+      sed 's/^/      /' "$TRAVAIL/reponse.json" 2>/dev/null
+    fi
+
+    # --- le service ne doit pas avoir accès au socket Docker.
+    if docker compose --profile installateur exec -T installateur \
+         test -S /var/run/docker.sock 2>/dev/null; then
+      echec "Le service voit le socket Docker : la barrière principale est absente."
+    else
+      succes "Le service n'a pas accès au socket Docker."
+    fi
+  else
+    echec "Le service d'installation ne répond pas sur $INSTALLATEUR_URL."
+    tail -20 "$TRAVAIL/installateur.log" | sed 's/^/      /'
+  fi
+else
+  echec "La construction du service d'installation a échoué."
+  tail -20 "$TRAVAIL/installateur.log" | sed 's/^/      /'
 fi
 
 # ------------------------------------------------------------------- verdict
