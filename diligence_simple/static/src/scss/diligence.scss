@@ -1,0 +1,149 @@
+// Design moderne pour l'application Diligences.
+// Volontairement limité aux vues portant la classe o_diligence_* :
+// le reste d'Odoo n'est pas affecté.
+
+$dil-bg: #f2f4f8;
+$dil-card-border: #e6e9ef;
+$dil-text-muted: #6b7280;
+$dil-haute: #e5484d;
+$dil-moyenne: #f59e0b;
+$dil-normale: #30a46c;
+$dil-accent: #714b67;
+
+.o_diligence_kanban {
+
+    // Fond général plus doux
+    &.o_kanban_renderer,
+    .o_kanban_renderer {
+        background: $dil-bg;
+    }
+
+    // Colonnes : fond discret, coins arrondis, séparation nette
+    .o_kanban_group {
+        background: rgba(255, 255, 255, 0.55);
+        border: 1px solid rgba(0, 0, 0, 0.04);
+        border-radius: 14px;
+        padding: 6px 8px;
+        margin: 0 6px;
+    }
+
+    .o_kanban_header {
+        padding-top: 6px;
+    }
+
+    .o_column_title {
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 0.78rem;
+        color: #374151;
+    }
+
+    // Cartes : blanches, très arrondies, ombre douce,
+    // accent coloré à gauche selon la priorité
+    .o_kanban_record {
+        background: #ffffff;
+        border-radius: 12px;
+        border: 1px solid $dil-card-border;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+        margin-bottom: 10px;
+        transition: box-shadow 0.15s ease, transform 0.15s ease;
+
+        &:hover {
+            box-shadow: 0 10px 24px rgba(16, 24, 40, 0.14);
+            transform: translateY(-2px);
+        }
+    }
+
+    .o_diligence_card {
+        border-left: 4px solid transparent;
+        border-radius: 12px;
+
+        &.o_diligence_prio_haute { border-left-color: $dil-haute; }
+        &.o_diligence_prio_moyenne { border-left-color: $dil-moyenne; }
+        &.o_diligence_prio_normale { border-left-color: $dil-normale; }
+
+        // Diligence en retard : halo rouge discret
+        &.o_diligence_late {
+            background: #fff7f7;
+        }
+    }
+
+    .o_kanban_record_title {
+        font-size: 0.95rem;
+        font-weight: 600;
+        line-height: 1.35;
+        color: #111827;
+    }
+
+    .badge {
+        font-weight: 600;
+        font-size: 0.68rem;
+        letter-spacing: 0.02em;
+    }
+
+    // Barre de progression fine et arrondie
+    .progress {
+        border-radius: 99px;
+        background: #eef0f4;
+    }
+
+    // Étiquettes (tags) en pilules douces
+    .o_field_many2many_tags .o_tag {
+        border-radius: 99px;
+    }
+
+    // Avatars légèrement agrandis et détourés
+    .o_m2m_avatar,
+    .o_avatar img {
+        border-radius: 50%;
+        box-shadow: 0 0 0 2px #ffffff;
+    }
+
+    // Bouton "+" de création rapide bien visible
+    .o_kanban_quick_add i {
+        color: $dil-accent;
+        font-size: 1.15rem;
+    }
+
+    // Colonne repliée
+    .o_kanban_group.o_column_folded .o_column_title {
+        letter-spacing: 0.04em;
+    }
+}
+
+// Formulaire : aéré, titre fort, feuille en carte
+.o_diligence_form {
+
+    .o_form_sheet_bg {
+        background: $dil-bg;
+    }
+
+    .o_form_sheet {
+        border-radius: 14px;
+        border: 1px solid $dil-card-border;
+        box-shadow: 0 2px 8px rgba(16, 24, 40, 0.06);
+    }
+
+    .oe_title h1 input,
+    .oe_title h1 span {
+        font-weight: 700;
+        letter-spacing: -0.01em;
+    }
+
+    // Statusbar : étapes en pilules
+    .o_statusbar_status .o_arrow_button {
+        border-radius: 99px !important;
+        margin-left: 4px;
+        font-weight: 600;
+    }
+
+    // Radios de priorité plus espacés
+    .o_radio_input {
+        cursor: pointer;
+    }
+
+    .o_notebook .nav-link {
+        font-weight: 600;
+    }
+}

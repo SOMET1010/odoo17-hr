@@ -1,0 +1,42 @@
+// =====================================================================
+// IDENTITÉ DE MARQUE — c'est ICI que vous mettez vos couleurs.
+// Ce fichier est chargé AVANT les variables d'Odoo ($... !default),
+// donc toute valeur définie ici gagne.
+// =====================================================================
+
+// ---- 1. Vos couleurs (remplacez ces valeurs d'exemple) --------------
+$tb-primary:   #714B67;   // Couleur principale : boutons, liens, éléments actifs
+$tb-secondary: #017E84;   // Couleur secondaire / accents
+$tb-navbar-bg: #FFFFFF;   // Fond de la barre de navigation supérieure
+$tb-text:      #1F2937;   // Couleur du texte principal
+$tb-bg:        #F4F5F8;   // Fond général des vues (gris très clair)
+
+// ---- 2. Application aux variables Odoo ------------------------------
+// Marque / couleur d'action (Odoo 17 dérive $primary Bootstrap de ceci)
+$o-brand-odoo: $tb-primary;
+$o-brand-primary: $tb-primary;
+$o-brand-secondary: $tb-secondary;
+
+// Couleur d'édition : Odoo choisit community/enterprise selon l'édition
+// installée — on aligne les deux sur la marque.
+$o-community-color: $tb-primary;
+$o-enterprise-color: $tb-primary;
+
+// Couleur des liens et des actions cliquables
+$o-action: $tb-secondary;
+
+// Texte et fonds
+$o-main-text-color: $tb-text;
+$o-view-background-color: #FFFFFF;   // fond des formulaires/listes
+$o-webclient-background-color: $tb-bg; // fond derrière les vues
+
+// ---- 3. Typographie --------------------------------------------------
+// Taille de base de tout le backend (13px par défaut chez Odoo).
+// 14px aère sensiblement l'interface.
+$o-root-font-size: 14px;
+
+// NOTE : selon votre build (community/enterprise), certains noms de
+// variables peuvent différer légèrement. Référence :
+//   addons/web/static/src/scss/primary_variables.scss
+//   (enterprise) web_enterprise/static/src/scss/primary_variables.scss
+// Vérifiez-y les noms exacts si une valeur ne semble pas prise en compte.

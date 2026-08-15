@@ -1,0 +1,49 @@
+// =====================================================================
+// VARIABLES BOOTSTRAP — arrondis, ombres, densité, typographie.
+// Chargé avant la compilation de Bootstrap par le backend :
+// ces valeurs redéfinissent les $... !default de Bootstrap 5.
+// C'est le levier le plus efficace pour moderniser le rendu global.
+// =====================================================================
+
+// ---- Typographie -----------------------------------------------------
+// Pour une police personnalisée : déclarez le @font-face dans theme.scss
+// (fichiers .woff2 dans static/fonts/) puis nommez-la ici en premier.
+$font-family-sans-serif: -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+$headings-font-weight: 700;
+
+// ---- Coins arrondis --------------------------------------------------
+$border-radius:    .5rem;    // boutons, champs, cartes (défaut BS : .25rem)
+$border-radius-sm: .375rem;
+$border-radius-lg: .75rem;   // modales, grands conteneurs
+$btn-border-radius:    $border-radius;
+$btn-border-radius-sm: $border-radius-sm;
+$btn-border-radius-lg: $border-radius-lg;
+$input-border-radius:  $border-radius;
+$modal-content-border-radius: $border-radius-lg;
+$card-border-radius:   $border-radius-lg;
+$dropdown-border-radius: $border-radius;
+$badge-border-radius:  99px;          // badges en pilules
+$tooltip-border-radius: $border-radius-sm;
+
+// ---- Ombres ----------------------------------------------------------
+// Ombres douces et diffuses (le défaut Bootstrap est dur et daté)
+$box-shadow-sm: 0 1px 2px rgba(16, 24, 40, .06);
+$box-shadow:    0 4px 12px rgba(16, 24, 40, .10);
+$box-shadow-lg: 0 12px 32px rgba(16, 24, 40, .16);
+$dropdown-box-shadow: $box-shadow;
+$modal-content-box-shadow-xs: $box-shadow;
+$modal-content-box-shadow-sm-up: $box-shadow-lg;
+
+// ---- Densité des tableaux (vues liste) -------------------------------
+// Odoo 17 utilise les variables de cellule Bootstrap 5.
+// Augmentez pour aérer, diminuez pour densifier.
+$table-cell-padding-y: .5rem;    // défaut ~.25rem : lignes plus aérées
+$table-cell-padding-x: .75rem;
+$table-cell-padding-y-sm: .3rem;
+$table-cell-padding-x-sm: .5rem;
+
+// ---- Divers ----------------------------------------------------------
+$input-btn-padding-y: .45rem;    // boutons/champs un peu plus hauts
+$input-btn-padding-x: .9rem;
+$input-btn-focus-width: .15rem;  // halo de focus plus discret

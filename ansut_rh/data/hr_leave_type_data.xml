@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <!-- RH-PR-001 : congé annuel soumis aux règles ANSUT -->
+    <record id="leave_type_conge_annuel" model="hr.leave.type">
+        <field name="name">Congés annuels (ANSUT)</field>
+        <field name="requires_allocation">yes</field>
+        <field name="employee_requests">no</field>
+        <field name="leave_validation_type">both</field>
+        <field name="request_unit">day</field>
+        <field name="ansut_annual" eval="True"/>
+    </record>
+
+    <!-- RH-PR-002 règle 1 : absence d'au plus une journée,
+         autorisée par le supérieur hiérarchique -->
+    <record id="leave_type_absence_1j" model="hr.leave.type">
+        <field name="name">Autorisation d'absence (≤ 1 jour)</field>
+        <field name="requires_allocation">no</field>
+        <field name="leave_validation_type">manager</field>
+        <field name="request_unit">half_day</field>
+        <field name="ansut_absence" eval="True"/>
+        <field name="ansut_max_days">1</field>
+    </record>
+
+    <!-- RH-PR-002 règle 1 : absence de plus d'une journée,
+         autorisée par le Directeur (double validation) -->
+    <record id="leave_type_absence_plus_1j" model="hr.leave.type">
+        <field name="name">Autorisation d'absence (&gt; 1 jour)</field>
+        <field name="requires_allocation">no</field>
+        <field name="leave_validation_type">both</field>
+        <field name="request_unit">day</field>
+        <field name="ansut_absence" eval="True"/>
+    </record>
+
+</odoo>
