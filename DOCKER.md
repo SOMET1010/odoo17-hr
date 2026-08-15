@@ -70,6 +70,26 @@ Puis, dans le panneau de connexion de l'atelier :
 Renseigner directement `http://localhost:8069` ne fonctionnera pas depuis le
 navigateur, faute d'en-têtes CORS côté Odoo.
 
+## Vérifier l'installation de bout en bout
+
+Un script déroule la recette complète et rend un verdict par contrôle :
+démarrage, journaux, création effective de la base, persistance des volumes
+après `down`/`up`, lecture et écriture via l'API, et comportement du
+rechargement à chaud.
+
+```bash
+./.docker/verifier-runtime.sh
+./.docker/verifier-runtime.sh --atelier /chemin/vers/odoo-react-alchemy
+```
+
+L'option `--atelier` ajoute le contrôle le plus utile : démarrer l'atelier avec
+son proxy, puis rejouer une lecture **et une écriture** à travers celui-ci. Une
+écriture qui aboutit prouve que le cookie de session a bien fait l'aller-retour
+— ce qu'une simple lecture ne démontre pas.
+
+Le script restaure les fichiers qu'il modifie et éteint la pile en sortant
+(`--keep` pour la laisser allumée). Il rend 0 si tout passe.
+
 ## Arrêter et repartir de zéro
 
 ```bash
