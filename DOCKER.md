@@ -38,9 +38,11 @@ docker compose run --rm odoo odoo -d ansut -u ansut_rh --stop-after-init
 docker compose restart odoo
 ```
 
-`dev_mode = reload,qweb,xml` est actif : les modifications de vues XML sont
-rechargées sans redémarrage, mais un changement de modèle Python impose la mise
-à jour ci-dessus.
+`dev_mode = reload,qweb,xml` est actif, mais la recette a montré qu'il ne
+dispense pas de la mise à jour : l'`arch` des vues est stockée en base, et une
+modification du fichier XML n'y est reportée que par `-u`. Le rechargement à
+chaud ne concerne que les templates QWeb. Un changement Python impose lui aussi
+la commande ci-dessus.
 
 ## Brancher l'atelier React
 
