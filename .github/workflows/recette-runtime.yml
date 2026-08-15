@@ -5,7 +5,18 @@ name: Recette d'exécution de la pile Odoo
 # Elle dure une dizaine de minutes, d'où l'absence de déclenchement à chaque
 # poussée. Ajouter un bloc `schedule` ci-dessous pour un passage hebdomadaire.
 on:
+  # Déclenchement manuel : ne fonctionne qu'une fois ce fichier présent sur la
+  # branche par défaut, contrainte de GitHub.
   workflow_dispatch:
+  # En attendant, la recette se joue automatiquement quand la pile ou la recette
+  # elle-même changent sur la branche de travail.
+  push:
+    branches:
+      - claude/odoo-modules-improvement-li5nwi
+    paths:
+      - '.docker/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/recette-runtime.yml'
 
 jobs:
   recette:
