@@ -187,6 +187,9 @@
                   decoration-danger="diligence_overdue"
                   decoration-muted="diligence_state == 'done'">
                 <field name="diligence_overdue" column_invisible="1"/>
+                <!-- Comme dans le formulaire : le domaine de project_id référence
+                     company_id, qui doit donc figurer dans la vue. -->
+                <field name="company_id" column_invisible="1"/>
                 <field name="name" string="Diligence"/>
                 <field name="project_id" optional="show"/>
                 <field name="user_ids" string="Responsables" widget="many2many_avatar_user" optional="show"/>
