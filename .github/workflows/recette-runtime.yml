@@ -1,0 +1,38 @@
+name: Recette d'exécution de la pile Odoo
+
+# Déclenchement manuel : la recette démarre la pile complète et joue les
+# contrôles d'exécution que `docker compose config` ne peut pas prouver.
+# Elle dure une dizaine de minutes, d'où l'absence de déclenchement à chaque
+# poussée. Ajouter un bloc `schedule` ci-dessous pour un passage hebdomadaire.
+on:
+  workflow_dispatch:
+
+jobs:
+  recette:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier que le runner dispose de Docker
+        run: |
+          docker --version
+          docker compose version
+          docker info --format 'Serveur : {{.ServerVersion}}'
+
+      - name: Jouer la recette
+        run: |
+          chmod +x .docker/verifier-runtime.sh
+          ./.docker/verifier-runtime.sh --keep
+
+      - name: Journaux des conteneurs
+        if: always()
+        run: |
+          echo "===== odoo ====="
+          docker compose logs --tail=300 odoo || true
+          echo "===== db ====="
+          docker compose logs --tail=100 db || true
+
+      - name: Éteindre la pile
+        if: always()
+        run: docker compose down -v || true
