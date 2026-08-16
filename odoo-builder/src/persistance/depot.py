@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS projet (
     cible        TEXT NOT NULL,
     technique    TEXT NOT NULL,
     contenu      TEXT NOT NULL,          -- spécification ou charte, en JSON
+    proprietaire TEXT NOT NULL DEFAULT '',  -- le compte, vide = poste local
     origine      TEXT NOT NULL DEFAULT '',
     cree_le      TEXT NOT NULL,
     modifie_le   TEXT NOT NULL
@@ -69,6 +70,7 @@ class Projet:
     origine: str
     cree_le: str
     modifie_le: str
+    proprietaire: str = ""
     revisions: int = 0
 
     def en_dict(self) -> dict:
@@ -78,6 +80,10 @@ class Projet:
             "origine": self.origine, "cree_le": self.cree_le,
             "modifie_le": self.modifie_le, "revisions": self.revisions,
         }
+
+
+class ProjetInaccessible(Exception):
+    """Le projet visé n'existe pas, ou n'appartient pas à ce compte."""
 
 
 class Depot:
@@ -91,6 +97,13 @@ class Depot:
         os.makedirs(os.path.dirname(self.chemin), exist_ok=True)
         with self._lien() as lien:
             lien.executescript(SCHEMA)
+            # Les dépôts créés avant les comptes n'ont pas la colonne. La
+            # poser après coup vaut mieux qu'exiger d'effacer ses projets
+            # pour installer une mise à jour.
+            colonnes = {c["name"] for c in lien.execute("PRAGMA table_info(projet)")}
+            if "proprietaire" not in colonnes:
+                lien.execute("ALTER TABLE projet ADD COLUMN proprietaire "
+                             "TEXT NOT NULL DEFAULT ''")
 
     def _lien(self) -> sqlite3.Connection:
         lien = sqlite3.connect(self.chemin)
@@ -105,7 +118,8 @@ class Depot:
 
     def enregistrer(self, nom: str, genre: str, cible: str, technique: str,
                     contenu: dict, horodatage: str, origine: str = "",
-                    identifiant: str | None = None, motif: str = "") -> str:
+                    identifiant: str | None = None, motif: str = "",
+                    proprietaire: str = "") -> str:
         """Créer un projet, ou en déposer une nouvelle révision.
 
         L'horodatage est FOURNI, jamais lu de l'horloge ici : une fonction qui
@@ -116,11 +130,26 @@ class Depot:
         contenu_json = json.dumps(contenu, ensure_ascii=False)
         with self._lien() as lien:
             if identifiant:
+                # Le propriétaire fait partie de la CLÉ de recherche : sans
+                # lui, connaître un identifiant suffirait à écraser le projet
+                # d'un autre. Un identifiant se devine mal, mais « mal » n'est
+                # pas « pas ».
                 existant = lien.execute(
-                    "SELECT id FROM projet WHERE id = ?", (identifiant,)
+                    "SELECT id FROM projet WHERE id = ? AND proprietaire = ?",
+                    (identifiant, proprietaire),
                 ).fetchone()
             else:
                 existant = None
+            if identifiant and not existant:
+                # L'identifiant est fourni mais ne désigne aucun projet de ce
+                # compte. Insérer produirait une violation d'unicité — donc
+                # une erreur 500 illisible — et en fabriquer un nouveau
+                # masquerait la tentative. On refuse en le disant.
+                deja = lien.execute("SELECT 1 FROM projet WHERE id = ?",
+                                    (identifiant,)).fetchone()
+                if deja:
+                    raise ProjetInaccessible(
+                        f"Le projet « {identifiant} » ne vous appartient pas.")
             if existant:
                 lien.execute(
                     "UPDATE projet SET nom = ?, genre = ?, cible = ?, "
@@ -132,10 +161,10 @@ class Depot:
                 identifiant = identifiant or uuid.uuid4().hex[:12]
                 lien.execute(
                     "INSERT INTO projet (id, nom, genre, cible, technique, "
-                    "contenu, origine, cree_le, modifie_le) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "contenu, origine, cree_le, modifie_le, proprietaire) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (identifiant, nom, genre, cible, technique, contenu_json,
-                     origine, horodatage, horodatage),
+                     origine, horodatage, horodatage, proprietaire),
                 )
             lien.execute(
                 "INSERT INTO revision (projet, contenu, motif, ecrit_le) "
@@ -144,40 +173,52 @@ class Depot:
             )
         return identifiant
 
-    def supprimer(self, identifiant: str) -> bool:
+    def supprimer(self, identifiant: str, proprietaire: str = "") -> bool:
         with self._lien() as lien:
-            curseur = lien.execute("DELETE FROM projet WHERE id = ?", (identifiant,))
+            curseur = lien.execute(
+                "DELETE FROM projet WHERE id = ? AND proprietaire = ?",
+                (identifiant, proprietaire))
             return curseur.rowcount > 0
 
     # ------------------------------------------------------------- lecture
 
-    def lister(self, limite: int = 50) -> list:
-        """Les projets, du plus récemment touché au plus ancien."""
+    def lister(self, proprietaire: str = "", limite: int = 50) -> list:
+        """Les projets DE CE COMPTE, du plus récemment touché au plus ancien.
+
+        Le filtre est appliqué en base, pas après coup : filtrer en Python
+        une liste déjà chargée finit toujours par oublier un chemin.
+        """
         with self._lien() as lien:
             lignes = lien.execute(
                 "SELECT p.*, (SELECT COUNT(*) FROM revision r WHERE r.projet = p.id)"
-                " AS revisions FROM projet p ORDER BY p.modifie_le DESC LIMIT ?",
-                (limite,),
+                " AS revisions FROM projet p WHERE p.proprietaire = ?"
+                " ORDER BY p.modifie_le DESC LIMIT ?",
+                (proprietaire, limite),
             ).fetchall()
         return [self._depuis_ligne(l) for l in lignes]
 
-    def ouvrir(self, identifiant: str) -> Projet | None:
+    def ouvrir(self, identifiant: str, proprietaire: str = "") -> Projet | None:
         with self._lien() as lien:
             ligne = lien.execute(
                 "SELECT p.*, (SELECT COUNT(*) FROM revision r WHERE r.projet = p.id)"
-                " AS revisions FROM projet p WHERE p.id = ?", (identifiant,),
+                " AS revisions FROM projet p WHERE p.id = ? AND p.proprietaire = ?",
+                (identifiant, proprietaire),
             ).fetchone()
         return self._depuis_ligne(ligne) if ligne else None
 
-    def historique(self, identifiant: str, limite: int = 20) -> list:
+    def historique(self, identifiant: str, proprietaire: str = "",
+                   limite: int = 20) -> list:
         with self._lien() as lien:
             lignes = lien.execute(
-                "SELECT id, motif, ecrit_le FROM revision WHERE projet = ? "
-                "ORDER BY id DESC LIMIT ?", (identifiant, limite),
+                "SELECT r.id, r.motif, r.ecrit_le FROM revision r "
+                "JOIN projet p ON p.id = r.projet "
+                "WHERE r.projet = ? AND p.proprietaire = ? "
+                "ORDER BY r.id DESC LIMIT ?", (identifiant, proprietaire, limite),
             ).fetchall()
         return [dict(l) for l in lignes]
 
-    def revision(self, identifiant: str, numero: int) -> dict | None:
+    def revision(self, identifiant: str, numero: int,
+                 proprietaire: str = "") -> dict | None:
         """Le contenu d'une révision précise — pour revenir en arrière.
 
         Le projet est vérifié en plus du numéro : sans cela, connaître un
@@ -185,8 +226,9 @@ class Depot:
         """
         with self._lien() as lien:
             ligne = lien.execute(
-                "SELECT contenu FROM revision WHERE id = ? AND projet = ?",
-                (numero, identifiant),
+                "SELECT r.contenu FROM revision r JOIN projet p ON p.id = r.projet "
+                "WHERE r.id = ? AND r.projet = ? AND p.proprietaire = ?",
+                (numero, identifiant, proprietaire),
             ).fetchone()
         return json.loads(ligne["contenu"]) if ligne else None
 

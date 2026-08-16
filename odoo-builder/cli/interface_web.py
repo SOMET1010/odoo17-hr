@@ -91,6 +91,11 @@ details summary{cursor:pointer;font-size:.8rem;color:var(--doux)}
   white-space:nowrap}
 .projet button{padding:3px 9px;font-size:.72rem}
 .projet .oter{background:transparent;color:var(--doux);padding:3px 6px}
+.porte{position:fixed;inset:0;display:grid;place-items:center;padding:20px;
+  background:var(--fond);z-index:10}
+.guichet{width:min(400px,100%);gap:14px}
+.lien-clair{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.5);
+  font-size:.76rem;padding:4px 10px}
 pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   background:var(--violet-clair);padding:11px;border-radius:4px;margin:8px 0 0}
 </style>
@@ -99,10 +104,31 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
 
 <div class="bandeau">
   <b>Atelier Odoo</b>
-  <span class="etat" id="etat">…</span>
+  <span style="margin-left:auto;display:flex;gap:14px;align-items:center">
+    <span class="etat" id="etat">…</span>
+    <span class="etat" id="qui" hidden></span>
+    <button class="lien-clair" id="deconnexion" hidden>Se déconnecter</button>
+  </span>
 </div>
 
-<main>
+<div id="porte" class="porte" hidden>
+  <form class="carte guichet" id="guichet">
+    <h2 id="titre-porte">Connexion</h2>
+    <p class="pied" id="mot-porte">Identifiez-vous pour retrouver vos projets.</p>
+    <div>
+      <label for="p-nom">Nom d'utilisateur</label>
+      <input id="p-nom" autocomplete="username" autofocus>
+    </div>
+    <div>
+      <label for="p-mdp">Mot de passe</label>
+      <input id="p-mdp" type="password" autocomplete="current-password">
+    </div>
+    <div id="porte-erreur" class="erreur" hidden></div>
+    <button type="submit" id="p-valider">Se connecter</button>
+  </form>
+</div>
+
+<main id="atelier" hidden>
   <div style="display:flex;flex-direction:column;gap:20px">
 
     <div class="carte">
@@ -129,6 +155,11 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
         <input id="chemin" placeholder="/chemin/vers/mon_module">
       </div>
       <button class="second" id="convertir">Convertir et afficher</button>
+      <div id="zone-envoi">
+        <label for="archive" style="margin-top:6px">Ou envoyez une archive ZIP</label>
+        <input type="file" id="archive" accept=".zip">
+        <button class="second" id="envoyer">Envoyer et convertir</button>
+      </div>
       <p class="pied">Le module est lu, jamais exécuté. Ce qui n'a pas pu être
         porté est listé dans le journal.</p>
     </div>
@@ -296,6 +327,7 @@ async function appeler(route, charge, bouton) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(Object.assign({cible: $('#cible').value}, charge)),
     });
+    if (reponse.status === 401) { location.reload(); return; }
     const donnee = await reponse.json();
     afficherJournal(donnee.journal);
     if (!reponse.ok) { afficherErreur(donnee.erreur || 'Échec.'); return; }
@@ -377,6 +409,27 @@ $('#nouveau').addEventListener('click', async () => {
 
 $('#concevoir').addEventListener('click', e =>
   appeler('/concevoir', {besoin: $('#besoin').value}, e.target));
+$('#envoyer').addEventListener('click', async evenement => {
+  const fichier = $('#archive').files[0];
+  if (!fichier) { afficherErreur('Choisissez une archive ZIP.'); return; }
+  const bouton = evenement.target, libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = 'Envoi…';
+  afficherErreur('');
+  try {
+    const formulaire = new FormData();
+    formulaire.append('cible', $('#cible').value);
+    formulaire.append('archive', fichier);
+    const reponse = await fetch('/televerser', {method: 'POST', body: formulaire});
+    if (reponse.status === 401) { location.reload(); return; }
+    const donnee = await reponse.json();
+    afficherJournal(donnee.journal);
+    if (!reponse.ok) { afficherErreur(donnee.erreur || 'Échec.'); return; }
+    afficherResume(donnee); listerProjets();
+  } catch (e) {
+    afficherErreur("L'envoi a échoué : " + e.message);
+  } finally { bouton.disabled = false; bouton.textContent = libelle; }
+});
+
 $('#convertir').addEventListener('click', e =>
   appeler('/convertir', {chemin: $('#chemin').value}, e.target));
 $('#telecharger').addEventListener('click', () => { location.href = '/module.zip'; });
@@ -389,9 +442,74 @@ for (const [titre, texte] of EXEMPLES) {
   $('#exemples').appendChild(b);
 }
 
-listerProjets();
-fetch('/sante').then(r => r.json()).then(s => {
-  for (const c of s.cibles) {
+let PREMIER = false;
+
+async function etat() {
+  const s = await (await fetch('/sante')).json();
+
+  /* Trois situations, et une seule doit ouvrir la porte :
+     — aucun compte et écoute locale : outil personnel, on entre ;
+     — aucun compte et écoute ouverte : il faut d'abord créer l'administrateur ;
+     — des comptes existent : il faut se connecter. */
+  PREMIER = !s.comptes_existants;
+  const ouvrir = s.connecte || (!s.comptes_existants && !s.ouvert);
+  $('#porte').hidden = ouvrir;
+  $('#atelier').hidden = !ouvrir;
+
+  if (!ouvrir) {
+    $('#titre-porte').textContent = PREMIER ? 'Premier compte' : 'Connexion';
+    $('#mot-porte').textContent = PREMIER
+      ? "Aucun compte n'existe encore. Celui-ci sera administrateur — au moins 12 caractères."
+      : 'Identifiez-vous pour retrouver vos projets.';
+    $('#p-valider').textContent = PREMIER ? 'Créer le compte' : 'Se connecter';
+    $('#p-mdp').autocomplete = PREMIER ? 'new-password' : 'current-password';
+    return s;
+  }
+
+  if (s.ouvert) {
+    /* Le chemin désignerait un dossier du serveur : on ne l'affiche même
+       pas, plutôt que de laisser quelqu'un s'y essayer et lire un refus. */
+    $('#chemin').closest('div').hidden = true;
+    $('#convertir').hidden = true;
+  }
+  $('#qui').hidden = !s.compte;
+  $('#deconnexion').hidden = !s.compte;
+  if (s.compte) $('#qui').textContent = s.compte.nom
+    + (s.compte.role === 'administrateur' ? ' · admin' : '');
+  return s;
+}
+
+$('#guichet').addEventListener('submit', async evenement => {
+  evenement.preventDefault();
+  const boite = $('#porte-erreur');
+  boite.hidden = true;
+  const reponse = await fetch(PREMIER ? '/inscription' : '/connexion', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({nom: $('#p-nom').value, motdepasse: $('#p-mdp').value}),
+  });
+  const donnee = await reponse.json();
+  if (!reponse.ok) {
+    boite.textContent = donnee.erreur || 'Échec.'; boite.hidden = false; return;
+  }
+  $('#p-mdp').value = '';
+  await demarrer();
+});
+
+$('#deconnexion').addEventListener('click', async () => {
+  await fetch('/deconnexion', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: '{}'});
+  location.reload();
+});
+
+async function demarrer() {
+  const s = await etat();
+  if ($('#atelier').hidden) return;
+  listerProjets();
+  if (!$('#cible').options.length) remplirChoix(s);
+}
+
+function remplirChoix(s) {
+  for (const c of s.cibles || []) {
     const o = document.createElement('option');
     o.value = c; o.textContent = 'Odoo ' + c;
     $('#cible').appendChild(o);
@@ -412,7 +530,9 @@ fetch('/sante').then(r => r.json()).then(s => {
     $('#concevoir').disabled = true;
     $('#concevoir').title = "Définir BUILDER_IA_CLE ou OPENAI_API_KEY avant de démarrer l'Atelier";
   }
-});
+}
+
+demarrer();
 </script>
 </body>
 </html>

@@ -2647,3 +2647,164 @@ class TestMemoireDeLAtelier(unittest.TestCase):
                 technique=f"p{numero}", contenu={},
                 horodatage=f"2026-08-16T{heure}")
         self.assertEqual([p.nom for p in self.depot.lister()], ["P1", "P2", "P0"])
+
+
+class TestComptes(unittest.TestCase):
+    """Sans comptes, l'Atelier ne peut pas sortir de « 127.0.0.1 ».
+
+    Ces contrôles portent sur les propriétés de sécurité, pas sur l'affichage :
+    un mot de passe n'est jamais stocké, un compte ne voit que ses projets, et
+    changer de mot de passe ferme les sessions ouvertes ailleurs.
+    """
+
+    def setUp(self):
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        sys.path.insert(0, os.path.join(RACINE, "src"))
+        from persistance.comptes import Comptes
+        from persistance.depot import Depot
+        self.fichier = os.path.join(self._dossier.name, "essai.sqlite")
+        self.depot = Depot(self.fichier)
+        self.comptes = Comptes(self.fichier)
+        self.alice = self.comptes.creer("alice", "une-phrase-assez-longue",
+                                        "2026-08-16T10:00:00", "administrateur")
+        self.bob = self.comptes.creer("bob", "une-autre-phrase-longue",
+                                      "2026-08-16T10:01:00")
+
+    def test_le_mot_de_passe_n_est_jamais_stocke(self):
+        import sqlite3
+        lien = sqlite3.connect(self.fichier)
+        stockee = lien.execute("SELECT empreinte FROM compte WHERE nom='alice'")\
+            .fetchone()[0]
+        lien.close()
+        self.assertNotIn("une-phrase-assez-longue", stockee)
+        self.assertTrue(stockee.startswith("pbkdf2-sha256$"))
+        # Le paramétrage voyage avec l'empreinte : sans lui, augmenter le
+        # nombre de tours invaliderait tous les comptes existants.
+        self.assertEqual(len(stockee.split("$")), 4)
+
+    def test_deux_comptes_donnent_deux_empreintes_differentes(self):
+        """Un sel par compte : sinon deux mots de passe identiques se voient."""
+        from persistance.comptes import empreinte
+        self.assertNotEqual(empreinte("identique"), empreinte("identique"))
+
+    def test_un_mot_de_passe_court_est_refuse(self):
+        from persistance.comptes import CompteInvalide
+        with self.assertRaises(CompteInvalide):
+            self.comptes.creer("carole", "court", "2026-08-16T10:02:00")
+
+    def test_un_compte_ne_voit_que_ses_projets(self):
+        identifiant = self.depot.enregistrer(
+            nom="Secret", genre="module", cible="17.0", technique="s",
+            contenu={"v": 1}, horodatage="2026-08-16T10:00:00",
+            proprietaire=self.alice.id)
+        self.assertEqual([p.nom for p in self.depot.lister(self.alice.id)], ["Secret"])
+        self.assertEqual(self.depot.lister(self.bob.id), [])
+        self.assertIsNone(self.depot.ouvrir(identifiant, self.bob.id))
+        self.assertFalse(self.depot.supprimer(identifiant, self.bob.id))
+        self.assertIsNotNone(self.depot.ouvrir(identifiant, self.alice.id))
+
+    def test_un_identifiant_connu_ne_permet_pas_d_ecraser(self):
+        """Deviner un identifiant ne doit pas suffire à écrire chez l'autre."""
+        identifiant = self.depot.enregistrer(
+            nom="À moi", genre="module", cible="17.0", technique="a",
+            contenu={"v": 1}, horodatage="2026-08-16T10:00:00",
+            proprietaire=self.alice.id)
+        # Bob présente l'identifiant d'Alice : refus explicite. Insérer
+        # produirait une violation d'unicité — une erreur 500 illisible — et
+        # créer un projet neuf masquerait la tentative.
+        from persistance.depot import ProjetInaccessible
+        with self.assertRaises(ProjetInaccessible):
+            self.depot.enregistrer(
+                nom="Pris", genre="module", cible="17.0", technique="b",
+                contenu={"v": 9}, horodatage="2026-08-16T11:00:00",
+                identifiant=identifiant, proprietaire=self.bob.id)
+        self.assertEqual(self.depot.ouvrir(identifiant, self.alice.id).contenu,
+                         {"v": 1})
+
+    def test_une_session_expire(self):
+        _, jeton = self.comptes.ouvrir_session(
+            "alice", "une-phrase-assez-longue", "2026-08-16T10:00:00",
+            "2026-08-17T10:00:00")
+        self.assertEqual(self.comptes.session(jeton, "2026-08-16T18:00:00").nom,
+                         "alice")
+        self.assertIsNone(self.comptes.session(jeton, "2026-08-18T10:00:00"))
+
+    def test_changer_de_mot_de_passe_ferme_les_sessions(self):
+        """On change justement parce qu'on soupçonne une intrusion."""
+        _, jeton = self.comptes.ouvrir_session(
+            "alice", "une-phrase-assez-longue", "2026-08-16T10:00:00",
+            "2026-09-16T10:00:00")
+        self.assertIsNotNone(self.comptes.session(jeton, "2026-08-16T11:00:00"))
+        self.comptes.changer_motdepasse(self.alice.id, "une-toute-autre-phrase")
+        self.assertIsNone(self.comptes.session(jeton, "2026-08-16T11:00:00"))
+
+    def test_un_nom_inconnu_et_un_mauvais_mot_de_passe_se_ressemblent(self):
+        """Les distinguer dirait à un inconnu quels comptes existent."""
+        self.assertIsNone(self.comptes.ouvrir_session(
+            "inexistant", "peu importe", "2026-08-16T10:00:00", "2026-09-16"))
+        self.assertIsNone(self.comptes.ouvrir_session(
+            "alice", "mauvais mot de passe", "2026-08-16T10:00:00", "2026-09-16"))
+
+
+class TestArchiveRecue(unittest.TestCase):
+    """Une archive vient d'ailleurs : elle se traite comme telle."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        os.environ["ATELIER_DEPOT"] = os.path.join(self._dossier.name, "a.sqlite")
+        from atelier import Atelier
+        self.atelier = Atelier()
+
+    def _archive(self, fichiers: dict) -> bytes:
+        tampon = io.BytesIO()
+        with zipfile.ZipFile(tampon, "w") as z:
+            for chemin, contenu in fichiers.items():
+                z.writestr(chemin, contenu)
+        return tampon.getvalue()
+
+    def test_un_chemin_qui_s_echappe_est_refuse(self):
+        """« ../ » écrirait hors du dossier temporaire, donc n'importe où."""
+        with self.assertRaises(ValueError) as boite:
+            self.atelier.convertir_archive(
+                self._archive({"../evade/__manifest__.py": "{}"}), "17.0")
+        self.assertIn("Chemin refusé", str(boite.exception))
+
+    def test_un_chemin_absolu_est_refuse(self):
+        with self.assertRaises(ValueError):
+            self.atelier.convertir_archive(
+                self._archive({"/etc/passwd": "x"}), "17.0")
+
+    def test_une_archive_sans_module_le_dit(self):
+        with self.assertRaises(ValueError) as boite:
+            self.atelier.convertir_archive(
+                self._archive({"notes.txt": "bonjour"}), "17.0")
+        self.assertIn("__manifest__.py", str(boite.exception))
+
+    def test_une_archive_qui_gonflerait_est_refusee(self):
+        """Deux mégaoctets compressés peuvent en faire vingt gigaoctets."""
+        gonflee = io.BytesIO()
+        with zipfile.ZipFile(gonflee, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("gros/__manifest__.py", "{}")
+            z.writestr("gros/zeros.bin", b"\0" * (self.atelier.TAILLE_MAX + 1))
+        with self.assertRaises(ValueError) as boite:
+            self.atelier.convertir_archive(gonflee.getvalue(), "17.0")
+        self.assertIn("décompressé", str(boite.exception))
+
+    def test_une_archive_saine_se_convertit(self):
+        resultat = self.atelier.convertir_archive(self._archive({
+            "mon_module/__manifest__.py":
+                "{'name':'Mon module','version':'17.0.1.0.0',"
+                "'depends':['base'],'data':[],'license':'LGPL-3'}",
+            "mon_module/__init__.py": "from . import models",
+            "mon_module/models/__init__.py": "",
+            "mon_module/models/chose.py":
+                "from odoo import fields, models\n\n\n"
+                "class Chose(models.Model):\n    _name = 'ma.chose'\n"
+                "    _description = 'Chose'\n"
+                "    name = fields.Char('Nom', required=True)\n",
+        }), "19.0")
+        self.assertEqual(resultat["cible"], "19.0")
+        self.assertTrue(resultat["valide"])

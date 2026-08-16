@@ -48,6 +48,8 @@ import io
 import json
 import os
 import sys
+import shutil
+import tempfile
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -61,7 +63,10 @@ from ai.provider import fournisseur_configure  # noqa: E402
 # déjà ce nom, et le dossier d'un script passe en tête du chemin d'import.
 # « import atelier.depot » retombait donc sur le script lui-même — une panne
 # qui ne se voit qu'à l'exécution, jamais à la lecture.
-from persistance.depot import Depot  # noqa: E402
+from persistance.comptes import (  # noqa: E402
+    DUREE_SESSION_JOURS, CompteInvalide, Comptes,
+)
+from persistance.depot import Depot, ProjetInaccessible  # noqa: E402
 from converter.extraction import ConversionImpossible, convertir  # noqa: E402
 from generator.dialecte import CIBLES  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
@@ -91,6 +96,11 @@ class Atelier:
         self.courant: str = ""            # « module » ou « theme »
         self.projet: str | None = None    # l'identifiant en cours
         self.depot = Depot()
+        self.comptes = Comptes(self.depot.chemin)
+        # Le compte qui travaille. Vide en local sans comptes : les projets
+        # appartiennent alors au « poste », ce qui est exactement ce qu'on
+        # veut d'un outil personnel.
+        self.compte = ""
         self.journal: list[str] = []
 
     @staticmethod
@@ -105,6 +115,7 @@ class Atelier:
             nom=nom, genre=genre, cible=cible, technique=technique,
             contenu=contenu, horodatage=self.maintenant(), origine=origine,
             identifiant=self.projet, motif=motif,
+            proprietaire=self.compte,
         )
         self.noter(f"Projet enregistré ({self.projet}).")
 
@@ -124,6 +135,62 @@ class Atelier:
         spec = SpecDrafter(fournisseur).draft(besoin, self.noter)
         spec.cible = cible
         return self.retenir(spec)
+
+    # Un ZIP de module tient en quelques centaines de kilooctets. La borne
+    # protège la machine d'un envoi qui la remplirait — et elle est
+    # VÉRIFIÉE À LA DÉCOMPRESSION, pas seulement sur l'archive : une archive
+    # de 2 Mo peut contenir 20 Go de zéros.
+    TAILLE_MAX = 40 * 1024 * 1024
+
+    def convertir_archive(self, brut: bytes, cible: str) -> dict:
+        """Convertir un module envoyé en archive.
+
+        C'est la seule voie possible en ligne : le champ « chemin » y
+        désignerait un dossier du SERVEUR, ce qui serait au mieux inutile et
+        au pire un moyen de lire ce qui traîne sur la machine.
+        """
+        if len(brut) > self.TAILLE_MAX:
+            raise ValueError(
+                f"Archive trop lourde ({len(brut) // 1024} Ko). "
+                f"La limite est de {self.TAILLE_MAX // 1024 // 1024} Mo.")
+        dossier = tempfile.mkdtemp(prefix="atelier-envoi-")
+        try:
+            with zipfile.ZipFile(io.BytesIO(brut)) as archive:
+                total = 0
+                for membre in archive.infolist():
+                    # « ../ » et les chemins absolus s'échapperaient du
+                    # dossier temporaire pour écrire n'importe où. Python le
+                    # neutralise depuis 3.6, mais on refuse explicitement :
+                    # un jour on changera d'outil d'extraction.
+                    nom = membre.filename.replace("\\", "/")
+                    if nom.startswith("/") or ".." in nom.split("/"):
+                        raise ValueError(
+                            f"Chemin refusé dans l'archive : « {membre.filename} ».")
+                    total += membre.file_size
+                    if total > self.TAILLE_MAX:
+                        raise ValueError(
+                            "Le contenu décompressé dépasse la limite : "
+                            "archive refusée.")
+                archive.extractall(dossier)
+
+            racine = self._racine_de_module(dossier)
+            if racine is None:
+                raise ValueError(
+                    "Aucun module dans cette archive : il faut un dossier "
+                    "contenant « __manifest__.py ».")
+            self.noter(f"Archive reçue : {len(brut) // 1024} Ko, "
+                       f"module « {os.path.basename(racine)} ».")
+            return self.convertir(racine, cible)
+        finally:
+            shutil.rmtree(dossier, ignore_errors=True)
+
+    @staticmethod
+    def _racine_de_module(dossier: str) -> str | None:
+        for courant, sous, noms in os.walk(dossier):
+            sous[:] = [s for s in sous if s not in ("__MACOSX", "__pycache__")]
+            if "__manifest__.py" in noms or "__openerp__.py" in noms:
+                return courant
+        return None
 
     def convertir(self, chemin: str, cible: str) -> dict:
         spec, bilan = convertir(chemin, cible)
@@ -181,7 +248,7 @@ class Atelier:
 
     def ouvrir(self, identifiant: str, cible: str | None = None) -> dict:
         """Reprendre un projet là où on l'avait laissé."""
-        projet = self.depot.ouvrir(identifiant)
+        projet = self.depot.ouvrir(identifiant, self.compte)
         if projet is None:
             raise FileNotFoundError(f"projet « {identifiant} » introuvable.")
         self.projet = projet.id
@@ -290,6 +357,8 @@ class Poignee(BaseHTTPRequestHandler):
     def _repondre(self, code: int, corps: bytes, type_mime: str) -> None:
         self.send_response(code)
         self.send_header("Content-Type", type_mime)
+        if getattr(self, "_cookie", ""):
+            self.send_header("Set-Cookie", self._cookie)
         self.send_header("Content-Length", str(len(corps)))
         # Rien de cet outil n'a vocation à être encadré ou appelé d'ailleurs.
         self.send_header("X-Frame-Options", "SAMEORIGIN")
@@ -299,6 +368,57 @@ class Poignee(BaseHTTPRequestHandler):
     def _json(self, code: int, donnee: dict) -> None:
         self._repondre(code, json.dumps(donnee, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
+
+    # ------------------------------------------------------- authentification
+
+    def _jeton(self) -> str:
+        """Le jeton de session, lu dans le cookie."""
+        brut = self.headers.get("Cookie") or ""
+        for morceau in brut.split(";"):
+            nom, _, valeur = morceau.strip().partition("=")
+            if nom == "atelier":
+                return valeur
+        return ""
+
+    def _poser_cookie(self, jeton: str, effacer: bool = False) -> None:
+        """HttpOnly : le JavaScript de la page ne doit jamais lire ce jeton.
+
+        SameSite=Lax : un formulaire posté depuis un autre site n'emporte pas
+        la session — c'est ce qui protège des requêtes forgées sans qu'on ait
+        à promener un jeton supplémentaire.
+
+        Secure quand on est derrière HTTPS : sans lui, le navigateur
+        renverrait le cookie en clair sur une éventuelle requête HTTP.
+        """
+        parties = [f"atelier={'' if effacer else jeton}", "Path=/",
+                   "HttpOnly", "SameSite=Lax"]
+        if effacer:
+            parties.append("Max-Age=0")
+        else:
+            parties.append(f"Max-Age={DUREE_SESSION_JOURS * 86400}")
+        if self.headers.get("X-Forwarded-Proto") == "https":
+            parties.append("Secure")
+        self._cookie = "; ".join(parties)
+
+    def _identifier(self) -> bool:
+        """Pose « self.atelier.compte », ou rend False s'il faut se connecter.
+
+        Quand aucun compte n'existe ET qu'on n'écoute que sur la machine,
+        l'Atelier reste ouvert : exiger un mot de passe pour un outil
+        personnel sur 127.0.0.1 ferait choisir « azerty » à tout le monde.
+        Dès qu'un compte existe, ou dès que l'écoute est ouverte, la
+        connexion devient obligatoire.
+        """
+        compte = self.atelier.comptes.session(self._jeton(), Atelier.maintenant())
+        if compte:
+            self.atelier.compte = compte.id
+            self.compte = compte
+            return True
+        self.compte = None
+        if self.server.ouvert or self.atelier.comptes.combien():
+            return False
+        self.atelier.compte = ""
+        return True
 
     def _corps(self) -> dict:
         # Lire AVANT toute décision : refuser une requête sans vider son corps
@@ -315,20 +435,30 @@ class Poignee(BaseHTTPRequestHandler):
 
     def do_GET(self):                                    # noqa: N802
         chemin = self.path.split("?")[0]
-        if chemin == "/":
-            return self._repondre(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
-        if chemin == "/projets":
-            return self._json(200, {
-                "projets": [p.en_dict() for p in self.atelier.depot.lister()],
-                "courant": self.atelier.projet,
-            })
+        identifie = self._identifier()
         if chemin == "/sante":
+            # La seule route ouverte : elle dit s'il faut se connecter, et
+            # rien d'autre. Sans elle, la page ne saurait quoi afficher.
             return self._json(200, {
+                "connecte": identifie and self.compte is not None,
+                "compte": self.compte.en_dict() if self.compte else None,
+                "comptes_existants": bool(self.atelier.comptes.combien()),
+                "ouvert": self.server.ouvert,
                 "fournisseur": fournisseur_configure(None) is not None,
                 "cibles": list(CIBLES),
                 "courant": self.atelier.courant,
                 "polices": {c: d for c, (_, d) in POLICES.items()},
                 "densites": {c: d for c, (_, d) in DENSITES.items()},
+            })
+        if chemin == "/":
+            return self._repondre(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        if not identifie:
+            return self._json(401, {"erreur": "connexion requise"})
+        if chemin == "/projets":
+            return self._json(200, {
+                "projets": [p.en_dict()
+                            for p in self.atelier.depot.lister(self.atelier.compte)],
+                "courant": self.atelier.projet,
             })
         if chemin == "/apercu.html":
             if not self.atelier.courant:
@@ -353,6 +483,20 @@ class Poignee(BaseHTTPRequestHandler):
     def do_POST(self):                                   # noqa: N802
         donnee = self._corps()
         chemin = self.path.split("?")[0]
+        identifie = self._identifier()
+
+        if chemin == "/connexion":
+            return self._connecter(donnee)
+        if chemin == "/inscription":
+            return self._inscrire(donnee)
+        if chemin == "/deconnexion":
+            self.atelier.comptes.fermer_session(self._jeton())
+            self.atelier.nouveau()
+            self.atelier.compte = ""
+            self._poser_cookie("", effacer=True)
+            return self._json(200, {"deconnecte": True})
+        if not identifie:
+            return self._json(401, {"erreur": "connexion requise"})
         cible = donnee.get("cible") or "17.0"
         if cible not in CIBLES:
             return self._json(400, {"erreur": f"cible inconnue « {cible} »"})
@@ -369,6 +513,14 @@ class Poignee(BaseHTTPRequestHandler):
                                   "quelles étapes de validation."})
                 resultat = self.atelier.concevoir(besoin, cible)
             elif chemin == "/convertir":
+                if self.server.ouvert:
+                    # Le chemin désignerait un dossier du SERVEUR. Sur une
+                    # instance partagée, c'est un moyen de lire ce qui s'y
+                    # trouve — on ferme la route plutôt que de filtrer des
+                    # chemins, exercice qu'on perd toujours.
+                    return self._json(403, {
+                        "erreur": "Sur une instance en ligne, envoyez une "
+                                  "archive : le chemin désignerait le serveur."})
                 resultat = self.atelier.convertir(donnee.get("chemin") or "", cible)
             elif chemin == "/projet/ouvrir":
                 # La cible du corps est IGNORÉE : un projet porte la sienne.
@@ -378,7 +530,8 @@ class Poignee(BaseHTTPRequestHandler):
                 # resté sur sa valeur par défaut.
                 resultat = self.atelier.ouvrir(donnee.get("id") or "")
             elif chemin == "/projet/supprimer":
-                efface = self.atelier.depot.supprimer(donnee.get("id") or "")
+                efface = self.atelier.depot.supprimer(donnee.get("id") or "",
+                                                      self.atelier.compte)
                 if self.atelier.projet == donnee.get("id"):
                     self.atelier.nouveau()
                 return self._json(200, {"supprime": efface,
@@ -393,11 +546,108 @@ class Poignee(BaseHTTPRequestHandler):
             else:
                 return self._json(404, {"erreur": "route inconnue"})
         except (RedactionImpossible, ConversionImpossible, SpecInvalide,
-                ThemeInvalide, RuntimeError, FileNotFoundError) as erreur:
+                ThemeInvalide, ProjetInaccessible, RuntimeError,
+                FileNotFoundError) as erreur:
             return self._json(400, {"erreur": str(erreur),
                                     "journal": self.atelier.journal})
         resultat["journal"] = self.atelier.journal
         return self._json(200, resultat)
+
+
+    def _televerser(self):
+        """Recevoir une archive et la convertir."""
+        self.atelier.journal = []
+        taille = int(self.headers.get("Content-Length") or 0)
+        if taille > self.atelier.TAILLE_MAX + 8192:
+            self.rfile.read(taille)            # vider avant de refuser
+            return self._json(413, {"erreur": "Archive trop lourde."})
+        brut = self.rfile.read(taille) if taille else b""
+
+        # Un envoi de formulaire enveloppe le fichier dans des frontières.
+        # On extrait le contenu plutôt que d'ajouter une bibliothèque : la
+        # structure est simple, et une dépendance de plus est une mise à jour
+        # de plus à surveiller.
+        type_contenu = self.headers.get("Content-Type") or ""
+        cible = "17.0"
+        if "multipart/form-data" in type_contenu and "boundary=" in type_contenu:
+            frontiere = ("--" + type_contenu.split("boundary=")[1].strip()
+                         ).encode("utf-8")
+            fichier = b""
+            for morceau in brut.split(frontiere):
+                separateur = morceau.find(b"\r\n\r\n")
+                if separateur == -1:
+                    continue
+                entetes = morceau[:separateur].decode("utf-8", "replace")
+                corps = morceau[separateur + 4:].rstrip(b"\r\n-")
+                if 'name="cible"' in entetes:
+                    valeur = corps.decode("utf-8", "replace").strip()
+                    if valeur in CIBLES:
+                        cible = valeur
+                elif "filename=" in entetes:
+                    fichier = corps
+            brut = fichier
+
+        if not brut:
+            return self._json(400, {"erreur": "Aucun fichier reçu."})
+        self.atelier.cible_courante = cible
+        try:
+            resultat = self.atelier.convertir_archive(brut, cible)
+        except (ValueError, zipfile.BadZipFile, ConversionImpossible,
+                SpecInvalide) as erreur:
+            return self._json(400, {"erreur": str(erreur),
+                                    "journal": self.atelier.journal})
+        resultat["journal"] = self.atelier.journal
+        return self._json(200, resultat)
+
+    # ------------------------------------------------------- comptes
+
+    def _connecter(self, donnee: dict):
+        nom = (donnee.get("nom") or "").strip()
+        ouverture = self.atelier.comptes.ouvrir_session(
+            nom, donnee.get("motdepasse") or "", Atelier.maintenant(),
+            self._expiration())
+        if ouverture is None:
+            # Un seul message pour « nom inconnu » et « mot de passe faux » :
+            # les distinguer dirait à un inconnu quels comptes existent.
+            return self._json(401, {"erreur": "Nom ou mot de passe incorrect."})
+        compte, jeton = ouverture
+        self.atelier.compte = compte.id
+        self.atelier.nouveau()
+        self._poser_cookie(jeton)
+        return self._json(200, {"compte": compte.en_dict()})
+
+    def _inscrire(self, donnee: dict):
+        """Le PREMIER compte se crée sans être connecté ; les suivants, non.
+
+        Sans cette exception, une instance neuve serait inutilisable : il
+        faudrait un compte pour créer le premier compte. Après quoi
+        l'inscription se referme — une instance en ligne dont n'importe qui
+        peut se créer un accès n'est pas protégée.
+        """
+        premier = self.atelier.comptes.combien() == 0
+        if not premier and not (self.compte and self.compte.administrateur):
+            return self._json(403, {
+                "erreur": "Seul un administrateur peut créer un compte."})
+        try:
+            compte = self.atelier.comptes.creer(
+                (donnee.get("nom") or "").strip(),
+                donnee.get("motdepasse") or "", Atelier.maintenant(),
+                role="administrateur" if premier else "membre")
+        except CompteInvalide as erreur:
+            return self._json(400, {"erreur": str(erreur)})
+        if premier:
+            _, jeton = self.atelier.comptes.ouvrir_session(
+                compte.nom, donnee.get("motdepasse"), Atelier.maintenant(),
+                self._expiration())
+            self.atelier.compte = compte.id
+            self._poser_cookie(jeton)
+        return self._json(200, {"compte": compte.en_dict(), "premier": premier})
+
+    @staticmethod
+    def _expiration() -> str:
+        return (datetime.datetime.now()
+                + datetime.timedelta(days=DUREE_SESSION_JOURS)
+                ).isoformat(timespec="seconds")
 
 
 def principal(argv=None) -> int:
@@ -409,6 +659,7 @@ def principal(argv=None) -> int:
 
     adresse = "0.0.0.0" if args.ouvert else "127.0.0.1"
     serveur = ThreadingHTTPServer((adresse, args.port), Poignee)
+    serveur.ouvert = args.ouvert
 
     fournisseur = fournisseur_configure(None)
     print(f"\n  Atelier          http://127.0.0.1:{args.port}")
