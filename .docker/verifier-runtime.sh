@@ -466,6 +466,77 @@ else
   tail -20 "$TRAVAIL/installateur.log" | sed 's/^/      /'
 fi
 
+# ------------------------------------------------------------------ étape 9
+
+titre "Étape 9 — Odoo Builder : spécification → module → installation réelle"
+
+# La chaîne complète du Builder, jouée contre le service déjà démarré à
+# l'étape 8. C'est le seul contrôle qui prouve qu'une spécification devient un
+# module réellement installé, et pas seulement un dossier bien formé.
+SPEC=odoo-builder/specs/recette_builder.json
+python3 - "$SPEC" <<'PY'
+import json, os, sys
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+spec = {
+    "technical_name": "recette_builder",
+    "name": "Recette du Builder",
+    "summary": "Module fabriqué par le Odoo Builder pendant la recette",
+    "category": "Tools",
+    "depends": ["base"],
+    "models": [{
+        "name": "recette.builder.note",
+        "description": "Note de recette",
+        "fields": [
+            {"name": "name", "type": "char", "string": "Titre", "required": True},
+            {"name": "contenu", "type": "text", "string": "Contenu"},
+            {"name": "etat", "type": "selection", "string": "État",
+             "selection": [["brouillon", "Brouillon"], ["valide", "Validé"]],
+             "default": "brouillon"},
+        ],
+    }],
+    "views": [
+        {"model": "recette.builder.note", "type": "tree", "name": "Notes",
+         "fields": ["name", "etat"]},
+        {"model": "recette.builder.note", "type": "form", "name": "Note",
+         "fields": ["name", "contenu", "etat"]},
+    ],
+    "actions": [{"id": "action_recette_note", "name": "Notes",
+                 "model": "recette.builder.note"}],
+    "menus": [
+        {"id": "menu_recette_racine", "name": "Recette Builder"},
+        {"id": "menu_recette_note", "name": "Notes",
+         "parent": "menu_recette_racine", "action": "action_recette_note"},
+    ],
+    "access": [{"model": "recette.builder.note", "group": "base.group_user",
+                "perms": "rwcd"}],
+}
+json.dump(spec, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+
+if INSTALLATEUR_CLE_API="$CLE_RECETTE" python3 odoo-builder/cli/atelier_odoo.py build "$SPEC" \
+     --service "$INSTALLATEUR_URL" >"$TRAVAIL/builder.log" 2>&1; then
+  succes "Le Builder fabrique et installe un module de bout en bout."
+else
+  echec "La chaîne du Builder a échoué :"
+  tail -25 "$TRAVAIL/builder.log" | sed 's/^/      /'
+fi
+
+# Le juge de paix reste Odoo, pas la sortie de la commande.
+etat_builder=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \
+  "select state from ir_module_module where name='recette_builder'" 2>/dev/null | tr -d '[:space:]')
+[[ "$etat_builder" == "installed" ]] \
+  && succes "Odoo confirme « recette_builder » installé." \
+  || echec "Dans la base, « recette_builder » est à l'état « ${etat_builder:-absent} »."
+
+# Le modèle déclaré par la spécification doit exister dans le registre.
+modele_cree=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \
+  "select count(*) from ir_model where model='recette.builder.note'" 2>/dev/null | tr -d '[:space:]')
+[[ "${modele_cree:-0}" == "1" ]] \
+  && succes "Le modèle « recette.builder.note » existe dans Odoo." \
+  || echec "Le modèle « recette.builder.note » est absent du registre."
+
+rm -f "$SPEC"
+
 # ------------------------------------------------------------------- verdict
 
 titre "Verdict"
