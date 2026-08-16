@@ -89,6 +89,42 @@ def ecrire_secrets(valeurs: dict[str, str], depot: str) -> str:
     return chemin
 
 
+def declarer_fournisseur(url: str, modele: str, chemin: str | None = None) -> str:
+    """Inscrit le point d'entrée et le modèle dans le fichier de secrets.
+
+    Ni l'un ni l'autre n'est un secret — mais ils vivent auprès de la clé,
+    parce qu'ils n'ont de sens qu'avec elle : une clé Moonshot envoyée à OpenAI
+    est refusée, et c'est exactement le mur rencontré en production.
+
+    Les déclarations existantes sont remplacées, jamais empilées : deux
+    `export BUILDER_IA_URL` dans le même fichier laisseraient la dernière
+    gagner en silence, ce qui rend un diagnostic incompréhensible.
+    """
+    chemin = chemin or chemin_secrets()
+    os.makedirs(os.path.dirname(chemin), exist_ok=True)
+
+    conservees = []
+    if os.path.isfile(chemin):
+        with open(chemin, encoding="utf-8") as f:
+            conservees = [
+                ligne for ligne in f
+                if not ligne.lstrip().startswith(
+                    ("export BUILDER_IA_URL=", "export BUILDER_IA_MODELE=")
+                )
+            ]
+        if conservees and not conservees[-1].endswith("\n"):
+            conservees[-1] += "\n"
+
+    conservees.append(f'export BUILDER_IA_URL="{url}"\n')
+    conservees.append(f'export BUILDER_IA_MODELE="{modele}"\n')
+
+    descripteur = os.open(chemin, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descripteur, "w", encoding="utf-8") as f:
+        f.writelines(conservees)
+    os.chmod(chemin, stat.S_IRUSR | stat.S_IWUSR)
+    return chemin
+
+
 def ecrire_routeur(choisis: list[tuple[str, str]], chemin: str) -> str:
     """Écrit routeur.json — qui ne contient jamais de clé, seulement des noms."""
     fournisseurs = []

@@ -120,6 +120,25 @@ else
   ok "secrets écrits dans $ENVFILE (lisible par vous seul)"
   # shellcheck disable=SC1090
   . "$ENVFILE"
+
+  # Une clé ne dit pas à qui elle appartient : « sk-… » ne désigne personne, et
+  # une clé Moonshot envoyée à OpenAI est refusée par un 401 qui ressemble à
+  # une clé invalide. Plutôt que de laisser cette confusion pour plus tard, on
+  # demande aux fournisseurs lequel la reconnaît.
+  if [[ -n "${CLE_IA:-}" ]]; then
+    info "recherche du fournisseur de cette clé…"
+    if BUILDER_IA_CLE="$CLE_IA" python3 odoo-builder/cli/atelier_odoo.py \
+         providers detect --adopter >/tmp/atelier-fournisseur.log 2>&1; then
+      # shellcheck disable=SC1090
+      . "$ENVFILE"
+      ok "fournisseur reconnu : ${BUILDER_IA_URL:-inconnu}"
+      info "modèle : ${BUILDER_IA_MODELE:-non précisé}"
+    else
+      avert "aucun fournisseur connu ne reconnaît cette clé."
+      info  "Détail : /tmp/atelier-fournisseur.log"
+      info  "L'installation continue ; la fabrication de modules attendra."
+    fi
+  fi
 fi
 
 # Une installation antérieure à cette version n'a pas de mot de passe Odoo.

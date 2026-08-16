@@ -22,8 +22,8 @@ sys.path.insert(0, os.path.join(RACINE, "src"))
 from ai.detection import accepte, detecter, modeles_disponibles  # noqa: E402
 from ai.diagnostic import Constat, VARIABLE, verifier_etapes  # noqa: E402
 from ai.installation import (  # noqa: E402
-    FOURNISSEURS, InstallationImpossible, chemin_secrets, ecrire_routeur,
-    ecrire_secrets, secret_installateur,
+    FOURNISSEURS, InstallationImpossible, chemin_secrets, declarer_fournisseur,
+    ecrire_routeur, ecrire_secrets, secret_installateur,
 )
 from ai.provider import (  # noqa: E402
     fournisseur_configure, fournisseur_depuis_environnement,
@@ -277,14 +277,23 @@ def commande_detecter(args) -> int:
             print("  Le service ne publie pas la liste de ses modèles ; le nom")
             print("  exact est à prendre dans sa documentation.")
 
-    fichier = chemin_secrets()
     modele = modeles[0] if modeles else details["modele_suggere"]
+
+    if getattr(args, "adopter", False):
+        fichier = declarer_fournisseur(details["url"], modele)
+        print(f"\n{VERT}Configuration enregistrée dans {fichier}.{FIN}")
+        print(f"    BUILDER_IA_URL     {details['url']}")
+        print(f"    BUILDER_IA_MODELE  {modele}")
+        print("\n  Elle prendra effet à la prochaine session, ou tout de suite :")
+        print(f"    source {fichier}")
+        return 0
+
+    fichier = chemin_secrets()
     print(f"\n{GRAS}À ajouter à {fichier} :{FIN}")
     print(f"    export BUILDER_IA_URL=\"{details['url']}\"")
     print(f"    export BUILDER_IA_MODELE=\"{modele}\"")
-    print("\n  En une commande :")
-    print(f"    printf '%s\\n' 'export BUILDER_IA_URL=\"{details['url']}\"' "
-          f"'export BUILDER_IA_MODELE=\"{modele}\"' >> {fichier}")
+    print(f"\n  Ou laisser la commande le faire : "
+          f"atelier-odoo providers detect --adopter")
     return 0
 
 
@@ -392,6 +401,10 @@ def principal(argv=None) -> int:
         "action", nargs="?", default="check", choices=["check", "detect"],
         help="check : vérifie variable, point d'entrée, authentification, modèle ; "
              "detect : cherche à quel fournisseur appartient la clé configurée",
+    )
+    fournisseurs.add_argument(
+        "--adopter", action="store_true",
+        help="detect : enregistre le fournisseur trouvé au lieu de l'afficher",
     )
     fournisseurs.set_defaults(fonction=commande_providers)
 

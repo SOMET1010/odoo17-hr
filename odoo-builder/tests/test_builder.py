@@ -983,8 +983,8 @@ class TestTraceDuRouteur(unittest.TestCase):
 import shutil as _shutil  # noqa: E402
 
 from ai.installation import (  # noqa: E402
-    FOURNISSEURS, InstallationImpossible, ecrire_routeur, ecrire_secrets,
-    secret_installateur,
+    FOURNISSEURS, InstallationImpossible, declarer_fournisseur, ecrire_routeur,
+    ecrire_secrets, secret_installateur,
 )
 
 
@@ -1222,3 +1222,51 @@ class TestDetectionDuFournisseur(unittest.TestCase):
                    "url": "https://exemple.invalide/v1/messages",
                    "cle_env": "ANTHROPIC_API_KEY", "modele_suggere": "claude-sonnet-5"}
         self.assertIsInstance(fournisseur_pour(details, "sk-essai"), AnthropicProvider)
+
+
+class TestDeclarationDuFournisseur(unittest.TestCase):
+    """Ce que « detect --adopter » écrit doit rester relisible et unique."""
+
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.chemin = os.path.join(self.dossier, "env")
+
+    def test_les_deux_lignes_sont_ecrites(self):
+        declarer_fournisseur("https://exemple.invalide/v1/chat/completions",
+                             "un-modele", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            contenu = f.read()
+        self.assertIn('export BUILDER_IA_URL="https://exemple.invalide/v1/chat/completions"',
+                      contenu)
+        self.assertIn('export BUILDER_IA_MODELE="un-modele"', contenu)
+
+    def test_la_cle_existante_est_conservee(self):
+        with open(self.chemin, "w", encoding="utf-8") as f:
+            f.write('export BUILDER_IA_CLE="sk-secret"\n')
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            contenu = f.read()
+        self.assertIn('export BUILDER_IA_CLE="sk-secret"', contenu)
+
+    def test_une_seconde_declaration_remplace_la_premiere(self):
+        """Deux « export BUILDER_IA_URL » rendraient tout diagnostic faux."""
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m1", self.chemin)
+        declarer_fournisseur("https://b.invalide/v1/chat/completions", "m2", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            contenu = f.read()
+        self.assertEqual(contenu.count("export BUILDER_IA_URL="), 1)
+        self.assertEqual(contenu.count("export BUILDER_IA_MODELE="), 1)
+        self.assertIn("b.invalide", contenu)
+        self.assertNotIn("a.invalide", contenu)
+
+    def test_le_fichier_reste_lisible_par_son_seul_proprietaire(self):
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m", self.chemin)
+        self.assertEqual(os.stat(self.chemin).st_mode & 0o777, 0o600)
+
+    def test_un_fichier_sans_saut_de_ligne_final_ne_colle_pas_les_lignes(self):
+        with open(self.chemin, "w", encoding="utf-8") as f:
+            f.write('export BUILDER_IA_CLE="sk-secret"')  # sans \n
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            lignes = f.read().splitlines()
+        self.assertIn('export BUILDER_IA_CLE="sk-secret"', lignes)
