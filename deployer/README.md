@@ -156,6 +156,22 @@ téléverser du code sous OEEL-1 serait le publier. Les recettes automatiques
 restent donc en édition communautaire, et ce qui dépend d'Enterprise se vérifie
 sur votre serveur. C'est une limite assumée, pas un oubli.
 
+## Apporter vos propres modules
+
+Vos modules de production se montent comme les addons Enterprise : depuis un
+dossier **hors du dépôt**.
+
+```bash
+scp -r "C:\chemin\vers\vos modules" root@serveur:/opt/odoo-maison
+bash deployer/installer.sh --https --addons-maison /opt/odoo-maison
+```
+
+Pourquoi hors du dépôt, alors qu'ils vous appartiennent ? Deux raisons. Ils
+prendraient l'historique et la visibilité de ce dépôt, qui ne les concernent
+pas. Et surtout, **le service d'installation refuse d'écraser un module présent
+dans les sources Git** : les y verser empêcherait l'Atelier d'en produire une
+version corrigée — exactement ce qu'on veut faire d'eux.
+
 ## Passer le dépôt en privé
 
 Ce dépôt contient des modules sous `OEEL-1`, dont la redistribution est

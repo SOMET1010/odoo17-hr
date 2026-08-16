@@ -56,6 +56,10 @@ services:
       # un dossier de la machine, en lecture seule. À défaut, un dossier vide
       # du dépôt occupe la place, pour que le chemin existe toujours.
       - ${ADDONS_ENTREPRISE:-./.docker/entreprise-absente}:/mnt/entreprise:ro
+      # Vos modules de production. Hors du dépôt eux aussi : les y verser les
+      # soumettrait à son historique et empêcherait le service d'installation
+      # d'en déposer une version corrigée — il refuse d'écraser une source Git.
+      - ${ADDONS_MAISON:-./.docker/maison-absente}:/mnt/maison:ro
       - ./.docker/odoo.conf:/etc/odoo/odoo.conf:ro
     restart: unless-stopped
 

@@ -19,6 +19,7 @@
 #   --addons-entreprise CHEMIN   dossier d'addons Odoo Enterprise, HORS du
 #                                dépôt. Sous OEEL-1 : jamais versionnés, jamais
 #                                copiés dans une image.
+#   --addons-maison CHEMIN       vos modules de production, HORS du dépôt.
 #
 # Dans tous les cas le service d'installation reste sur 127.0.0.1 : il reçoit
 # des archives et installe du code, il n'a rien à faire sur Internet.
@@ -30,6 +31,7 @@ MODE=""        # https | http | ferme
 DOMAINE=""
 COURRIEL=""
 ENTREPRISE=""
+MAISON=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --https)    MODE="https"; shift ;;
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --public)   MODE="http";  shift ;;
     --prive)    MODE="ferme"; shift ;;
     --addons-entreprise) ENTREPRISE="${2:-}"; shift 2 ;;
+    --addons-maison)     MAISON="${2:-}"; shift 2 ;;
     *) printf 'Option inconnue : %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -189,22 +192,26 @@ if [[ -z "$MODE" ]]; then
   esac
 fi
 
-# Les modules Enterprise sont sous OEEL-1 : leur redistribution est interdite.
-# Un dossier situé DANS le dépôt finirait tôt ou tard dans un commit, et le
-# dépôt est publiable. On refuse avant, pas après.
-if [[ -n "$ENTREPRISE" ]]; then
-  reel=$(readlink -f "$ENTREPRISE" 2>/dev/null || echo "")
+# Un dossier d'addons posé DANS le dépôt finirait tôt ou tard dans un commit —
+# le premier « git add -A » suffirait. Pour les modules Enterprise c'est une
+# faute de licence ; pour vos modules de production, c'est leur historique et
+# leur visibilité qui changeraient à leur insu. On refuse avant, pas après.
+verifier_addons() {
+  local chemin="$1" etiquette="$2"
+  local reel depot nombre
+  reel=$(readlink -f "$chemin" 2>/dev/null || echo "")
   depot=$(readlink -f . 2>/dev/null || echo ".")
-  if [[ -z "$reel" || ! -d "$reel" ]]; then
-    fatal "dossier d'addons Enterprise introuvable : $ENTREPRISE"
-  fi
+  [[ -n "$reel" && -d "$reel" ]] || fatal "dossier $etiquette introuvable : $chemin"
   if [[ "$reel" == "$depot"/* || "$reel" == "$depot" ]]; then
     fatal "refus : « $reel » est dans le dépôt. Ces modules ne doivent jamais y entrer."
   fi
   nombre=$(find "$reel" -maxdepth 2 -name "__manifest__.py" 2>/dev/null | wc -l)
-  ok "addons Enterprise : $reel ($nombre module(s) détecté(s))"
+  ok "addons $etiquette : $reel ($nombre module(s) détecté(s))"
   (( nombre > 0 )) || avert "aucun manifeste trouvé — le chemin pointe-t-il sur le bon dossier ?"
-fi
+}
+
+[[ -n "$ENTREPRISE" ]] && verifier_addons "$ENTREPRISE" "Enterprise"
+[[ -n "$MAISON" ]] && verifier_addons "$MAISON" "maison"
 
 BIND_ODOO="127.0.0.1"
 PROFILS=(--profile installateur)
@@ -252,6 +259,7 @@ umask 077
   echo "ODOO_ADMIN_MOTDEPASSE=$ODOO_ADMIN_MOTDEPASSE"
   echo "ODOO_OPTIONS=$ODOO_OPTIONS"
   [[ -n "$ENTREPRISE" ]] && echo "ADDONS_ENTREPRISE=$ENTREPRISE"
+  [[ -n "$MAISON" ]] && echo "ADDONS_MAISON=$MAISON"
   [[ -n "$DOMAINE" ]] && echo "ATELIER_DOMAINE=$DOMAINE"
   # Directive complète, ou rien : « email » sans argument empêche Caddy
   # de démarrer, et une variable définie mais vide ne prend aucun défaut.
