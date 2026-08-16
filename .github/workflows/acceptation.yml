@@ -1,0 +1,86 @@
+name: Acceptation — besoin en français vers module Odoo exécutable
+
+# Le seul maillon qu'aucun autre contrôle ne couvre : l'appel réel au modèle.
+# Les 123 tests du Builder prouvent le déterministe ; celui-ci prouve la
+# chaîne entière, avec un vrai fournisseur, un vrai Odoo, une vraie base.
+#
+# Il consomme des jetons à chaque exécution. D'où l'absence de déclenchement à
+# chaque poussée : seules les modifications du Builder ou de ce fichier le
+# déclenchent.
+#
+# Prérequis, à faire une fois dans Settings → Secrets and variables → Actions :
+#   secret   BUILDER_IA_CLE      la clé du fournisseur
+#   variable BUILDER_IA_URL      point d'entrée (défaut : Moonshot)
+#   variable BUILDER_IA_MODELE   nom du modèle (défaut : kimi-k3)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/odoo-react-alchemy-handoff-hmig21
+    paths:
+      - 'odoo-builder/**'
+      - '.docker/service-installation/**'
+      - '.github/workflows/acceptation.yml'
+
+jobs:
+  acceptation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      INSTALLATEUR_CLE_API: cle-de-recette-jetable
+      BUILDER_IA_CLE: ${{ secrets.BUILDER_IA_CLE }}
+      BUILDER_IA_URL: ${{ vars.BUILDER_IA_URL || 'https://api.moonshot.ai/v1/chat/completions' }}
+      BUILDER_IA_MODELE: ${{ vars.BUILDER_IA_MODELE || 'kimi-k3' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sans clé, l'exécution s'arrête ici avec une raison lisible plutôt que
+      # d'échouer plus loin sur un 401 qui ressemblerait à une régression.
+      - name: Vérifier que la clé est déclarée
+        run: |
+          if [ -z "$BUILDER_IA_CLE" ]; then
+            echo "::error::Le secret BUILDER_IA_CLE n'est pas déclaré."
+            echo "Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          echo "Clé présente. Fournisseur : $BUILDER_IA_URL ($BUILDER_IA_MODELE)"
+
+      - name: Démarrer la pile
+        run: docker compose --profile installateur up -d --build
+
+      - name: Créer la base
+        run: |
+          docker compose run --rm odoo odoo -d ansut -i base \
+            --stop-after-init --log-level=warn
+          docker compose --profile installateur up -d
+
+      - name: Attendre qu'Odoo réponde
+        run: |
+          for _ in $(seq 1 90); do
+            curl -sS -o /dev/null --max-time 3 http://127.0.0.1:8069/web/login && exit 0
+            sleep 2
+          done
+          echo "::error::Odoo n'a pas répondu."
+          exit 1
+
+      - name: Diagnostiquer le fournisseur
+        run: python3 odoo-builder/cli/atelier_odoo.py providers check
+
+      - name: Jouer l'acceptation
+        run: python3 odoo-builder/cli/acceptation.py | tee /tmp/acceptation.log
+
+      - name: Journaux, quoi qu'il arrive
+        if: always()
+        run: |
+          echo "===== odoo ====="
+          docker compose logs --tail=200 odoo || true
+          echo "===== installateur ====="
+          docker compose logs --tail=100 installateur || true
+
+      - name: Conserver le compte rendu
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptation
+          path: /tmp/acceptation.log
+          if-no-files-found: ignore
