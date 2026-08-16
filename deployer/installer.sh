@@ -63,7 +63,7 @@ fi
 if ! docker info >/dev/null 2>&1; then
   if sudo docker info >/dev/null 2>&1; then
     avert "Docker exige sudo pour cet utilisateur."
-    info  "Pour l'éviter à l'avenir : sudo usermod -aG docker $USER"
+    info  "Pour l'éviter à l'avenir : sudo usermod -aG docker ${USER:-root}"
     info  "puis fermez et rouvrez votre session. Le script continue avec sudo."
     DOCKER="sudo docker"
   else
@@ -126,14 +126,13 @@ done
 curl -sS -o /dev/null --max-time 3 http://127.0.0.1:8069/web/login 2>/dev/null \
   && ok "Odoo répond" || avert "Odoo ne répond pas encore ; il finit peut-être de démarrer."
 
-if [[ ! -f /tmp/.base-creee ]]; then
-  info "création de la base « ansut » et installation des modules…"
-  $DOCKER compose run --rm odoo odoo -d ansut \
-    -i diligence_simple,theme_backend,ansut_rh --stop-after-init \
-    >/tmp/atelier-modules.log 2>&1 && ok "modules installés" \
-    || avert "installation partielle — voir /tmp/atelier-modules.log"
-  $DOCKER compose --profile installateur up -d >/dev/null 2>&1
-fi
+# Réinstaller un module déjà installé est sans effet : pas de condition à poser.
+info "création de la base « ansut » et installation des modules…"
+$DOCKER compose run --rm odoo odoo -d ansut \
+  -i diligence_simple,theme_backend,ansut_rh --stop-after-init \
+  >/tmp/atelier-modules.log 2>&1 && ok "modules installés" \
+  || avert "installation partielle — voir /tmp/atelier-modules.log"
+$DOCKER compose --profile installateur up -d >/dev/null 2>&1
 
 # ------------------------------------------------------------ vérification
 
@@ -156,7 +155,7 @@ titre "C'est prêt"
 
 printf '  L'"'"'Atelier tourne, et n'"'"'est joignable que depuis cette machine.\n\n'
 printf '  %bDepuis votre poste%b, ouvrez un tunnel puis allez sur http://localhost:8069\n' "$GRAS" "$FIN"
-printf '      ssh -N -L 8069:127.0.0.1:8069 %s@%s\n\n' "$USER" "$(hostname -I 2>/dev/null | awk '{print $1}')"
+printf '      ssh -N -L 8069:127.0.0.1:8069 %s@%s\n\n' "${USER:-root}" "$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '  %bSur cette machine%b, à chaque session :\n' "$GRAS" "$FIN"
 printf '      source %s\n\n' "$ENVFILE"
 if [[ -z "${BUILDER_IA_CLE:-}" ]]; then
