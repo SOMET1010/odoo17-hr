@@ -47,6 +47,18 @@ AUTRE=/tmp/atelier-cookies-autre.txt
 # vérifié avec la racine, et le nom résolu vers la boucle locale.
 appel() { curl -sS --cacert "$RACINE" --resolve "localhost:443:127.0.0.1" "$@"; }
 
+# Attendre un VRAI 200. « curl » rend 0 sur un 502 : la passerelle répond,
+# même quand l'interface derrière elle est morte. Une boucle qui se contente du
+# code de sortie de curl sort donc au premier essai, en croyant le service levé.
+attendre_200() {
+  for _ in $(seq 1 "${2:-45}"); do
+    [[ "$(appel -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null)" == "200" ]] \
+      && return 0
+    sleep 2
+  done
+  return 1
+}
+
 nettoyer() {
   if [[ "$KEEP" == "0" ]]; then
     "${PILE[@]}" down -v >/dev/null 2>&1
@@ -241,7 +253,7 @@ controle $? "/convertir par chemin est refusé, avec le motif." \
 
 titre "Étape 8 — Une archive déposée devient un projet"
 
-(cd exemples && zip -qr /tmp/atelier-exemple.zip suivi_dossier)
+(cd odoo-builder/exemples && zip -qr /tmp/atelier-exemple.zip suivi_dossier)
 [[ -s /tmp/atelier-exemple.zip ]]
 controle $? "L'archive d'exemple est fabriquée."
 
@@ -288,10 +300,9 @@ controle $? "Le second compte ne voit aucun projet du premier." \
 titre "Étape 10 — Les comptes et les projets survivent au conteneur"
 
 "${PILE[@]}" up -d --force-recreate atelier-web >/tmp/atelier-recreate.log 2>&1
-for _ in $(seq 1 45); do
-  appel -o /dev/null --max-time 5 https://localhost/sante >/dev/null 2>&1 && break
-  sleep 2
-done
+attendre_200 https://localhost/sante
+controle $? "L'interface répond de nouveau après recréation." \
+  "$("${PILE[@]}" logs --tail=5 atelier-web 2>&1 | tail -3)"
 apres=$(appel -b "$BISCUITS" --max-time 10 https://localhost/projets 2>/dev/null)
 grep -q '"projets": *\[ *{' <<<"$apres"
 controle $? "Après recréation du conteneur, le projet est toujours là." \
