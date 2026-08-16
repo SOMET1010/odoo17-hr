@@ -30,10 +30,15 @@ L'ÉCOUTE EST LOCALE PAR DÉFAUT. Cet outil fabrique du code et lit des dossiers
 de la machine : l'ouvrir sur un réseau demande une décision explicite, pas un
 oubli de configuration.
 
-OUTIL À UN SEUL POSTE. La spécification en cours vit en mémoire du processus.
-C'est assumé — deux personnes qui travailleraient sur la même instance se
-marcheraient dessus, et un vrai service multi-utilisateur est un autre objet
-(voir .docker/service-atelier).
+LES PROJETS SURVIVENT. Ce qu'on fabrique est enregistré dans un fichier
+SQLite (voir persistance/depot.py) : fermer la fenêtre ou changer de poste ne
+fait plus tout recommencer. La spécification est gardée, jamais le module
+engendré — celui-ci se régénère, et le régénérer garantit qu'il porte les
+corrections apportées au générateur depuis.
+
+UN SEUL POSTE, ENCORE. Il n'y a ni comptes ni droits : deux personnes sur la
+même instance verraient les mêmes projets. C'est la prochaine marche, et elle
+va de pair avec la mise en ligne — dont l'authentification est la condition.
 """
 
 from __future__ import annotations
@@ -49,7 +54,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
+import datetime  # noqa: E402
+
 from ai.provider import fournisseur_configure  # noqa: E402
+# Le paquet s'appelle « persistance » et non « atelier » : ce script porte
+# déjà ce nom, et le dossier d'un script passe en tête du chemin d'import.
+# « import atelier.depot » retombait donc sur le script lui-même — une panne
+# qui ne se voit qu'à l'exécution, jamais à la lecture.
+from persistance.depot import Depot  # noqa: E402
 from converter.extraction import ConversionImpossible, convertir  # noqa: E402
 from generator.dialecte import CIBLES  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
@@ -77,7 +89,24 @@ class Atelier:
         # l'archive d'un module, ce qui serait la pire des confusions.
         self.charte: Charte | None = None
         self.courant: str = ""            # « module » ou « theme »
+        self.projet: str | None = None    # l'identifiant en cours
+        self.depot = Depot()
         self.journal: list[str] = []
+
+    @staticmethod
+    def maintenant() -> str:
+        return datetime.datetime.now().isoformat(timespec="seconds")
+
+    def retenir_projet(self, nom, genre, cible, technique, contenu,
+                       origine="", motif="") -> None:
+        """Tout passe par ici. Un seul point d'enregistrement, donc rien
+        qui puisse être oublié sur l'un des trois chemins."""
+        self.projet = self.depot.enregistrer(
+            nom=nom, genre=genre, cible=cible, technique=technique,
+            contenu=contenu, horodatage=self.maintenant(), origine=origine,
+            identifiant=self.projet, motif=motif,
+        )
+        self.noter(f"Projet enregistré ({self.projet}).")
 
     def noter(self, ligne: str) -> None:
         self.journal.append(str(ligne).rstrip())
@@ -128,7 +157,10 @@ class Atelier:
             self.noter(rapport.texte())
         self.spec, self.courant = spec, "module"
         self.charte = None
+        self.retenir_projet(spec.name, "module", spec.cible, spec.technical_name,
+                            _en_dict(spec), motif="spécification")
         return {
+            "projet": self.projet,
             "genre": "module",
             "nom": spec.name,
             "technique": spec.technical_name,
@@ -146,6 +178,26 @@ class Atelier:
             "anomalies": [str(a) for a in rapport.anomalies],
             "specification": _en_dict(spec),
         }
+
+    def ouvrir(self, identifiant: str, cible: str | None = None) -> dict:
+        """Reprendre un projet là où on l'avait laissé."""
+        projet = self.depot.ouvrir(identifiant)
+        if projet is None:
+            raise FileNotFoundError(f"projet « {identifiant} » introuvable.")
+        self.projet = projet.id
+        cible = cible or projet.cible
+        self.cible_courante = cible
+        self.noter(f"Projet « {projet.nom} » rouvert "
+                   f"({projet.revisions} révision(s)).")
+        if projet.genre == "theme":
+            return self.theme(projet.contenu, cible)
+        return self.charger(projet.contenu, cible)
+
+    def nouveau(self) -> None:
+        """Repartir de zéro sans effacer ce qui est enregistré."""
+        self.spec = self.charte = None
+        self.courant = ""
+        self.projet = None
 
     # -------------------------------------------------------------- livrables
 
@@ -181,9 +233,17 @@ class Atelier:
 
         self.charte, self.courant = charte, "theme"
         self.spec = None
+        self.retenir_projet(
+            charte.nom, "theme", cible, charte.technical_name,
+            {"nom": charte.nom, "technique": charte.technical_name,
+             "primaire": charte.primaire, "accent": charte.accent,
+             "police": charte.police, "densite": charte.densite,
+             "arrondi": charte.arrondi, "auteur": charte.auteur},
+            motif="charte")
         fichiers = generer_theme(charte, cible)
         self.noter(f"Thème généré : {len(fichiers)} fichiers pour Odoo {cible}.")
         return {
+            "projet": self.projet,
             "nom": charte.nom, "technique": charte.technical_name,
             "cible": cible, "version": charte.version,
             "genre": "theme", "fichiers": len(fichiers),
@@ -257,6 +317,11 @@ class Poignee(BaseHTTPRequestHandler):
         chemin = self.path.split("?")[0]
         if chemin == "/":
             return self._repondre(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        if chemin == "/projets":
+            return self._json(200, {
+                "projets": [p.en_dict() for p in self.atelier.depot.lister()],
+                "courant": self.atelier.projet,
+            })
         if chemin == "/sante":
             return self._json(200, {
                 "fournisseur": fournisseur_configure(None) is not None,
@@ -305,6 +370,22 @@ class Poignee(BaseHTTPRequestHandler):
                 resultat = self.atelier.concevoir(besoin, cible)
             elif chemin == "/convertir":
                 resultat = self.atelier.convertir(donnee.get("chemin") or "", cible)
+            elif chemin == "/projet/ouvrir":
+                # La cible du corps est IGNORÉE : un projet porte la sienne.
+                # L'honorer ferait qu'un simple clic sur « Ouvrir » changerait
+                # la version visée sans que rien ne le dise — un module conçu
+                # pour Odoo 19 reviendrait en 17 parce qu'un sélecteur était
+                # resté sur sa valeur par défaut.
+                resultat = self.atelier.ouvrir(donnee.get("id") or "")
+            elif chemin == "/projet/supprimer":
+                efface = self.atelier.depot.supprimer(donnee.get("id") or "")
+                if self.atelier.projet == donnee.get("id"):
+                    self.atelier.nouveau()
+                return self._json(200, {"supprime": efface,
+                                        "journal": self.atelier.journal})
+            elif chemin == "/projet/nouveau":
+                self.atelier.nouveau()
+                return self._json(200, {"journal": ["Nouveau projet."]})
             elif chemin == "/theme":
                 resultat = self.atelier.theme(donnee, cible)
             elif chemin == "/charger":

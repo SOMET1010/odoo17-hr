@@ -2569,3 +2569,81 @@ class TestAtelierLocal(unittest.TestCase):
             debut = PAGE.index(identifiant)
             self.assertIn("hidden", PAGE[debut:debut + 120],
                           f"{identifiant} devrait démarrer caché")
+
+
+class TestMemoireDeLAtelier(unittest.TestCase):
+    """Un projet doit survivre à la fermeture d'un onglet.
+
+    C'est ce qui sépare un outil qu'on lance d'une application qu'on habite.
+    Sans mémoire, changer de poste ou revenir le lendemain fait tout
+    recommencer — et un outil qu'on doit recommencer, on cesse de l'utiliser.
+    """
+
+    def setUp(self):
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        sys.path.insert(0, os.path.join(RACINE, "src"))
+        from persistance.depot import Depot
+        self.depot = Depot(os.path.join(self._dossier.name, "essai.sqlite"))
+
+    def test_un_projet_se_retrouve_apres_fermeture(self):
+        identifiant = self.depot.enregistrer(
+            nom="Missions", genre="module", cible="17.0",
+            technique="mission_management", contenu={"technical_name": "x"},
+            horodatage="2026-08-16T10:00:00", motif="première")
+        # Un second dépôt sur le MÊME fichier : c'est la situation réelle,
+        # un processus qui redémarre.
+        from persistance.depot import Depot
+        autre = Depot(self.depot.chemin)
+        projet = autre.ouvrir(identifiant)
+        self.assertIsNotNone(projet)
+        self.assertEqual(projet.nom, "Missions")
+        self.assertEqual(projet.contenu["technical_name"], "x")
+
+    def test_chaque_enregistrement_laisse_une_trace(self):
+        """Sans historique, corriger écrase la version qui marchait."""
+        identifiant = self.depot.enregistrer(
+            nom="A", genre="module", cible="17.0", technique="a",
+            contenu={"v": 1}, horodatage="2026-08-16T10:00:00", motif="départ")
+        self.depot.enregistrer(
+            nom="A", genre="module", cible="17.0", technique="a",
+            contenu={"v": 2}, horodatage="2026-08-16T11:00:00",
+            identifiant=identifiant, motif="correction")
+
+        self.assertEqual(self.depot.ouvrir(identifiant).contenu, {"v": 2})
+        historique = self.depot.historique(identifiant)
+        self.assertEqual(len(historique), 2)
+        self.assertEqual([h["motif"] for h in historique], ["correction", "départ"])
+        # On doit pouvoir revenir à l'état d'avant.
+        ancienne = historique[-1]["id"]
+        self.assertEqual(self.depot.revision(identifiant, ancienne), {"v": 1})
+
+    def test_une_revision_ne_se_lit_pas_depuis_un_autre_projet(self):
+        """Connaître un numéro ne doit pas suffire à lire ailleurs."""
+        premier = self.depot.enregistrer(
+            nom="A", genre="module", cible="17.0", technique="a",
+            contenu={"secret": "A"}, horodatage="2026-08-16T10:00:00")
+        second = self.depot.enregistrer(
+            nom="B", genre="module", cible="17.0", technique="b",
+            contenu={"secret": "B"}, horodatage="2026-08-16T10:01:00")
+        numero = self.depot.historique(premier)[0]["id"]
+        self.assertEqual(self.depot.revision(premier, numero), {"secret": "A"})
+        self.assertIsNone(self.depot.revision(second, numero))
+
+    def test_supprimer_un_projet_emporte_ses_revisions(self):
+        """Sans les clés étrangères actives, elles resteraient orphelines."""
+        identifiant = self.depot.enregistrer(
+            nom="A", genre="module", cible="17.0", technique="a",
+            contenu={"v": 1}, horodatage="2026-08-16T10:00:00")
+        self.assertTrue(self.depot.supprimer(identifiant))
+        self.assertIsNone(self.depot.ouvrir(identifiant))
+        self.assertEqual(self.depot.historique(identifiant), [])
+        self.assertFalse(self.depot.supprimer(identifiant))
+
+    def test_les_projets_sortent_du_plus_recent_au_plus_ancien(self):
+        for numero, heure in enumerate(("10:00:00", "12:00:00", "11:00:00")):
+            self.depot.enregistrer(
+                nom=f"P{numero}", genre="module", cible="17.0",
+                technique=f"p{numero}", contenu={},
+                horodatage=f"2026-08-16T{heure}")
+        self.assertEqual([p.nom for p in self.depot.lister()], ["P1", "P2", "P0"])

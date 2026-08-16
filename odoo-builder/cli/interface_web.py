@@ -81,6 +81,16 @@ details summary{cursor:pointer;font-size:.8rem;color:var(--doux)}
   border:1px solid var(--trait);border-radius:4px;background:var(--fond)}
 .couleur input[type=text]{font-family:var(--mono);font-size:.82rem;
   text-transform:uppercase}
+.projets{display:flex;flex-direction:column;gap:4px;max-height:230px;overflow:auto}
+.projet{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:4px;
+  border:1px solid var(--trait);background:var(--fond)}
+.projet.actif{border-color:var(--violet);background:var(--violet-clair)}
+.projet .nom{flex:1;font-size:.84rem;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.projet .meta{font-family:var(--mono);font-size:.66rem;color:var(--doux);
+  white-space:nowrap}
+.projet button{padding:3px 9px;font-size:.72rem}
+.projet .oter{background:transparent;color:var(--doux);padding:3px 6px}
 pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   background:var(--violet-clair);padding:11px;border-radius:4px;margin:8px 0 0}
 </style>
@@ -158,6 +168,14 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <button id="theme">Prévisualiser le thème</button>
     </div>
 
+    <div class="carte">
+      <h2>Mes projets</h2>
+      <p class="pied">Tout ce que vous fabriquez est enregistré. Fermez la
+        fenêtre, changez de poste : le travail reste.</p>
+      <div class="projets" id="projets"><p class="pied">Aucun projet.</p></div>
+      <button class="second" id="nouveau">Repartir de zéro</button>
+    </div>
+
     <div class="carte" id="carte-journal" hidden>
       <h2>Journal</h2>
       <div class="journal" id="journal"></div>
@@ -217,6 +235,7 @@ function afficherJournal(lignes) {
 
 function afficherResume(r) {
   $('#carte-resume').hidden = false;
+  if (r.cible) $('#cible').value = r.cible;   /* le sélecteur suit la pièce */
   $('#titre-module').textContent = r.nom;
   if (r.genre === 'theme') {
     const jetons = [['jeton', r.technique], ['jeton', 'Odoo ' + r.cible],
@@ -281,6 +300,7 @@ async function appeler(route, charge, bouton) {
     afficherJournal(donnee.journal);
     if (!reponse.ok) { afficherErreur(donnee.erreur || 'Échec.'); return; }
     afficherResume(donnee);
+    listerProjets();
   } catch (e) {
     afficherErreur("L'Atelier ne répond pas : " + e.message);
   } finally {
@@ -315,6 +335,46 @@ $('#theme').addEventListener('click', e => appeler('/theme', {
   arrondi: $('#t-arrondi').value,
 }, e.target));
 
+async function listerProjets() {
+  const r = await fetch('/projets'); const d = await r.json();
+  const zone = $('#projets');
+  zone.innerHTML = '';
+  if (!d.projets.length) {
+    zone.innerHTML = '<p class="pied">Aucun projet pour l\'instant.</p>';
+    return;
+  }
+  for (const p of d.projets) {
+    const ligne = document.createElement('div');
+    ligne.className = 'projet' + (p.id === d.courant ? ' actif' : '');
+    const nom = document.createElement('span');
+    nom.className = 'nom'; nom.textContent = p.nom;
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = (p.genre === 'theme' ? 'thème' : 'module')
+      + ' · ' + p.cible + ' · ' + p.revisions + ' rév.';
+    const ouvrir = document.createElement('button');
+    ouvrir.textContent = 'Ouvrir';
+    ouvrir.addEventListener('click', e => appeler('/projet/ouvrir', {id: p.id}, e.target));
+    const oter = document.createElement('button');
+    oter.className = 'oter'; oter.textContent = '×'; oter.title = 'Supprimer';
+    oter.addEventListener('click', async () => {
+      await fetch('/projet/supprimer', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: p.id})});
+      listerProjets();
+    });
+    ligne.append(nom, meta, ouvrir, oter);
+    zone.appendChild(ligne);
+  }
+}
+
+$('#nouveau').addEventListener('click', async () => {
+  await fetch('/projet/nouveau', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:'{}'});
+  $('#carte-resume').hidden = true;
+  $('#zone-apercu').innerHTML = '<p class="vide">L\'aperçu s\'affichera ici.</p>';
+  listerProjets();
+});
+
 $('#concevoir').addEventListener('click', e =>
   appeler('/concevoir', {besoin: $('#besoin').value}, e.target));
 $('#convertir').addEventListener('click', e =>
@@ -329,6 +389,7 @@ for (const [titre, texte] of EXEMPLES) {
   $('#exemples').appendChild(b);
 }
 
+listerProjets();
 fetch('/sante').then(r => r.json()).then(s => {
   for (const c of s.cibles) {
     const o = document.createElement('option');
