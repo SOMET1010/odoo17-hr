@@ -90,7 +90,7 @@ display:flex;justify-content:space-between;gap:10px}}
 background:rgba(156,107,24,.09);border-radius:0 4px 4px 0}}
 
 /* --- La maquette Odoo. Tout vient des jetons, aucune couleur en dur. */
-.ecran{{border-radius:8px;overflow:hidden;border:1px solid var(--t-bordure);
+.ecran{{border-radius:10px;overflow:hidden;border:1px solid var(--t-bordure);
 background:var(--t-fond);color:var(--t-texte);font-size:var(--t-taille);
 box-shadow:0 12px 32px -22px rgba(0,0,0,.5)}}
 .barre{{background:var(--t-barre);color:var(--t-texte-barre);padding:0 14px;
@@ -104,8 +104,22 @@ display:grid;place-items:center;font-size:.7rem}}
 padding:9px 14px;display:flex;align-items:center;gap:10px}}
 .recherche{{flex:1;background:var(--t-fond);border:1px solid var(--t-bordure);
 border-radius:var(--t-radius);padding:5px 10px;font-size:.82rem;opacity:.7}}
-.corps{{display:grid;grid-template-columns:1fr;gap:0}}
-.bloc{{background:var(--t-surface);border-bottom:1px solid var(--t-bordure);padding:14px}}
+.corps{{display:grid;grid-template-columns:200px 1fr;gap:0;min-height:340px}}
+@media(max-width:760px){{.corps{{grid-template-columns:1fr}} .flanc{{display:none}}}}
+.flanc{{background:var(--t-surface);border-right:1px solid var(--t-bordure);
+padding:10px 8px;display:flex;flex-direction:column;gap:2px}}
+.flanc a{{display:flex;align-items:center;gap:10px;padding:8px 11px;
+border-radius:var(--t-radius);font-size:.85rem;color:var(--t-texte-doux);
+text-decoration:none}}
+.flanc a.on{{background:color-mix(in srgb, var(--t-primaire) 12%, transparent);
+color:var(--t-primaire);font-weight:600}}
+.flanc .pic{{width:16px;text-align:center;opacity:.85}}
+.flanc .reduire{{margin-top:auto;font-size:.78rem;color:var(--t-texte-doux);
+padding:8px 11px;border-top:1px solid var(--t-bordure)}}
+.principal{{display:flex;flex-direction:column}}
+.bloc{{background:var(--t-surface);border-bottom:1px solid var(--t-bordure);
+padding:14px 18px}}
+.bloc:last-child{{border-bottom:0}}
 .bouton{{background:var(--t-primaire);color:{_e(texte_lisible(charte.primaire))};
 border:0;border-radius:var(--t-radius);padding:5px 13px;font-size:.82rem;
 font-family:inherit}}
@@ -122,7 +136,7 @@ th{{text-align:left;font-size:.7rem;letter-spacing:.05em;text-transform:uppercas
 color:var(--t-texte-doux);padding:8px 10px;border-bottom:1px solid var(--t-bordure)}}
 td{{padding:8px 10px;border-bottom:1px solid var(--t-bordure)}}
 tr:last-child td{{border-bottom:0}}
-.badge{{font-size:.7rem;padding:2px 9px;border-radius:20px;
+.badge{{font-size:.7rem;padding:3px 11px;border-radius:20px;font-weight:600;
 background:var(--t-accent);color:{_e(texte_lisible(charte.accent))}}}
 .lien{{color:var(--t-primaire);font-weight:500}}
 .champ{{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:7px 0;
@@ -209,6 +223,17 @@ def _maquette(charte: Charte) -> str:
         <button class="bouton vide">Exporter</button>
       </div>
       <div class="corps">
+        <nav class="flanc">
+          <a class="on"><span class="pic">⌂</span>Accueil</a>
+          <a><span class="pic">✈</span>Missions</a>
+          <a><span class="pic">◫</span>Partenaires</a>
+          <a><span class="pic">☰</span>RH &amp; Équipe</a>
+          <a><span class="pic">₣</span>Finances</a>
+          <a><span class="pic">▤</span>Rapports</a>
+          <a><span class="pic">⚙</span>Configuration</a>
+          <div class="reduire">‹ Réduire</div>
+        </nav>
+        <div class="principal">
         <div class="bloc">
           <div class="etiq">Vue liste</div>
           <table>
@@ -256,6 +281,7 @@ def _maquette(charte: Charte) -> str:
                 <span class="val">2</span></div>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>"""
