@@ -59,6 +59,9 @@ class RapportConversion:
     module: str = ""
     version_origine: str = ""
     manques: list[Manque] = field(default_factory=list)
+    # Ce que la version visée fait nativement là où le module le fait à la
+    # main. Voir converter/apports.py : rien n'est appliqué, tout est signalé.
+    apports: list = field(default_factory=list)
     # Ce qui a été repris, pour que le rapport ne soit pas qu'une liste de deuils.
     repris: dict[str, int] = field(default_factory=dict)
 
@@ -81,6 +84,31 @@ class RapportConversion:
         """Les seuls manques qui changent ce que fait le module."""
         return [m for m in self.manques if m.genre == COMPORTEMENT]
 
+    def _apports(self) -> list[str]:
+        """Ce que la version d'arrivée offre, et que ce module fait à la main.
+
+        Placé AVANT la liste des pertes : c'est la partie que personne ne lit
+        si on la met en bas, et c'est celle qui évite de réimplanter en 19 ce
+        que la 19 sait faire.
+        """
+        if not self.apports:
+            return []
+        lignes = ["", f"CE QUE LA VERSION D'ARRIVÉE APPORTE — {len(self.apports)} point(s)."]
+        from converter.apports import ACQUIS
+        for genre in (ACQUIS, "à saisir"):
+            groupe = [a for a in self.apports if a.regle.genre == genre]
+            if not groupe:
+                continue
+            lignes.append("")
+            if genre == ACQUIS:
+                lignes.append("[acquis — le module converti en profite déjà]")
+            else:
+                lignes.append("[à saisir — porte sur du code non repris ; "
+                              "demande une réécriture]")
+            for apport in groupe:
+                lignes.append(apport.texte())
+        return lignes
+
     def texte(self) -> str:
         lignes = [f"Conversion de « {self.module} »"]
         if self.version_origine:
@@ -91,6 +119,8 @@ class RapportConversion:
             lignes.append("Repris dans la spécification :")
             for quoi in sorted(self.repris):
                 lignes.append(f"  {self.repris[quoi]:>4}  {quoi}")
+
+        lignes.extend(self._apports())
 
         if not self.manques:
             lignes.append("")

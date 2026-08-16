@@ -32,6 +32,7 @@ import os
 import re
 from xml.etree import ElementTree
 
+from converter import apports as catalogue_apports
 from converter.rapport import COMPORTEMENT, OBSOLETE, STRUCTURE, RapportConversion
 from spec.module_spec import (
     Acces, Action, Champ, Menu, Modele, ModuleSpec, Vue,
@@ -112,6 +113,17 @@ DECORATEURS_OBSOLETES = {
     "cr_uid_ids": "signature « cr, uid, ids » d'avant Odoo 8",
 }
 
+# Noms d'API héritée qu'on repère à la lecture — qu'ils soient définis ou
+# seulement appelés. Ils ne servent pas à juger le module : ils servent à
+# savoir quels apports de la version visée le concernent réellement.
+APPELS_HERITES = {
+    "name_get": "name_get",
+    "read_group": "read_group",
+    "fields_view_get": "fields_view_get",
+    "check_access_rights": "controle_acces",
+    "check_access_rule": "controle_acces",
+}
+
 VERSION_MANIFESTE = re.compile(r"^(\d+\.\d+)\.(\d+\.\d+(?:\.\d+)?)$")
 
 
@@ -175,10 +187,16 @@ class Extracteur:
         # Les modèles qu'on a sciemment écartés (assistants, modèles
         # abstraits). Tout ce qui les vise doit partir avec eux.
         self.modeles_ecartes: set[str] = set()
+        # Ce qu'on a vu, indépendamment de ce qu'on en a fait. Sert à dire ce
+        # que la version visée offre à CE module — pas à en dresser le procès.
+        self.observations: list[tuple[str, str, int]] = []
         self.vues: list[Vue] = []
         self.actions: list[Action] = []
         self.menus: list[Menu] = []
         self.acces: list[Acces] = []
+
+    def observer(self, marqueur: str, fichier: str, ligne: int = 0) -> None:
+        self.observations.append((marqueur, fichier, ligne))
 
     # ------------------------------------------------------------ entrée
 
@@ -204,6 +222,7 @@ class Extracteur:
             manifeste.get("version"), chemin_manifeste
         )
         self.rapport.version_origine = version_origine
+        self.rapport.apports = catalogue_apports.calculer(self.observations, self.cible)
 
         spec = ModuleSpec(
             technical_name=nom_technique,
@@ -325,6 +344,7 @@ class Extracteur:
             return
 
         if re.search(r"^\s*from\s+openerp\b|^\s*import\s+openerp\b", source, re.M):
+            self.observer("osv", self._relatif(chemin), 1)
             self.rapport.noter(
                 OBSOLETE, self._relatif(chemin), 1, "import « openerp »",
                 "le paquet s'appelle « odoo » depuis la version 10.",
@@ -333,6 +353,15 @@ class Extracteur:
         for noeud in ast.walk(arbre):
             if isinstance(noeud, ast.ClassDef):
                 self._lire_classe(noeud, chemin)
+            # Une API héritée compte qu'elle soit définie ou seulement
+            # appelée : « self.check_access_rights(...) » dit autant sur ce
+            # que la version visée apporterait qu'une surcharge.
+            nom = getattr(noeud, "attr", None) or (
+                noeud.name if isinstance(noeud, ast.FunctionDef) else None
+            )
+            if nom in APPELS_HERITES:
+                self.observer(APPELS_HERITES[nom], self._relatif(chemin),
+                              getattr(noeud, "lineno", 0))
 
     def _base_odoo(self, classe: ast.ClassDef) -> str | None:
         """Le genre de modèle : « model », « transient », « abstract »…"""
@@ -355,6 +384,7 @@ class Extracteur:
         fichier = self._relatif(chemin)
 
         if genre == "osv":
+            self.observer("osv", fichier, classe.lineno)
             self.rapport.noter(
                 OBSOLETE, fichier, classe.lineno, f"classe « {classe.name} » sur osv.osv",
                 "l'ancienne couche « osv » a disparu en Odoo 10.",
@@ -427,11 +457,14 @@ class Extracteur:
             if cible.id in ("_name", "_inherit", "_description", "_rec_name"):
                 trouves[cible.id] = None if valeur is _CODE else valeur
             elif cible.id in OBSOLETES_PYTHON:
+                if cible.id in ("_columns", "_defaults"):
+                    self.observer("colonnes_anciennes", fichier, corps.lineno)
                 self.rapport.noter(
                     OBSOLETE, fichier, corps.lineno, f"« {cible.id} »",
                     OBSOLETES_PYTHON[cible.id],
                 )
             elif cible.id in ("_sql_constraints", "_constraints"):
+                self.observer("sql_constraints", fichier, corps.lineno)
                 # Odoo 19 ne les applique PLUS. Il se contente d'un
                 # avertissement dans le journal (odoo/orm/model_classes.py,
                 # 19.0 l. 162) : « Model attribute '_sql_constraints' is no
@@ -517,6 +550,8 @@ class Extracteur:
                 "la valeur n'est pas écrite en clair ; le champ est conservé sans elle.",
             )
         for cle in arguments.pop("_inconnus", []):
+            if cle == "group_operator":
+                self.observer("group_operator", fichier, noeud.lineno)
             self.rapport.noter(
                 OBSOLETE if cle in ARGUMENTS_RENOMMES else STRUCTURE,
                 fichier, noeud.lineno, f"champ « {nom} » : {cle}=…",
@@ -625,6 +660,8 @@ class Extracteur:
                 isinstance(decorateur.func, ast.Attribute) else \
                 (decorateur.attr if isinstance(decorateur, ast.Attribute) else "")
             if attribut in DECORATEURS_OBSOLETES:
+                if attribut in ("one", "multi"):
+                    self.observer("api_multi", fichier, noeud.lineno)
                 self.rapport.noter(
                     OBSOLETE, fichier, noeud.lineno, f"« @api.{attribut} » sur {noeud.name}",
                     DECORATEURS_OBSOLETES[attribut],
@@ -777,11 +814,14 @@ class Extracteur:
         # seul nom, et c'est le dialecte qui rend celui de la version visée.
         # Sans cette normalisation, convertir un module 18 vers 17 produirait
         # une vue « list » qu'Odoo 17 ne connaît pas.
+        if racine.tag == "tree":
+            self.observer("balise_tree", fichier)
         type_vue = "tree" if racine.tag == "list" else racine.tag
 
         for element in racine.iter():
             for perime in ("attrs", "states"):
                 if element.get(perime):
+                    self.observer("attrs", fichier)
                     self.rapport.noter(
                         OBSOLETE, fichier, 0,
                         f"vue « {identifiant} » : attribut « {perime} »",

@@ -52,6 +52,8 @@ def principal(argv=None) -> int:
                            help="écrire la spécification obtenue (JSON)")
     analyseur.add_argument("--exiger-complet", action="store_true",
                            help="échouer si un comportement n'a pas été porté")
+    analyseur.add_argument("--comparer-versions", action="store_true",
+                           help="ce que chaque version apporterait à CE module")
     args = analyseur.parse_args(argv)
 
     try:
@@ -64,6 +66,10 @@ def principal(argv=None) -> int:
     print()
     print(rapport.texte())
     print()
+
+    if args.comparer_versions:
+        _comparer(args.module)
+        print()
 
     # La spécification obtenue doit tenir debout d'elle-même. Si elle ne
     # valide pas, c'est le convertisseur qui a produit quelque chose
@@ -104,6 +110,51 @@ def principal(argv=None) -> int:
         if args.exiger_complet:
             return 1
     return 0
+
+
+def _comparer(module: str) -> None:
+    """Ce que chaque version apporterait à CE module, et non en général.
+
+    La question « faut-il aller en 18 ou en 19 » n'a pas de réponse générale :
+    elle dépend de ce que le module fait à la main. Un module sans contrainte
+    SQL ne gagne rien au « models.Constraint » de la 19 ; un module qui en a
+    quatre y gagne quatre déclarations et des messages d'erreur lisibles.
+
+    On affiche donc les paliers, et surtout ce que CHAQUE marche ajoute.
+    """
+    from converter.apports import par_version
+
+    tables = par_version(bilan_observations(module))
+
+    print(f"{GRAS}=== Ce que chaque version apporterait à ce module{FIN}")
+    precedent = []
+    for version in CIBLES:
+        liste = tables[version]
+        nouveaux = [a for a in liste if a not in precedent]
+        print()
+        print(f"  {GRAS}Odoo {version}{FIN} — {len(liste)} apport(s) au total, "
+              f"{len(nouveaux)} de plus que la version précédente")
+        for apport in nouveaux:
+            marque = "acquis" if apport.regle.genre == "acquis" else "à saisir"
+            print(f"    [{marque}] {apport.regle.ancien}")
+            print(f"             → {apport.regle.nouveau}")
+        if not nouveaux and precedent:
+            print("    (rien de plus pour ce module)")
+        precedent = liste
+
+
+def bilan_observations(module: str):
+    """Les marqueurs relevés dans le module, indépendamment de toute cible.
+
+    Ils ne dépendent pas de la version visée — c'est le catalogue qui filtre.
+    Les relever une fois évite de relire le module trois fois pour dire trois
+    choses tirées de la même lecture.
+    """
+    from converter.extraction import Extracteur
+
+    extracteur = Extracteur(module, CIBLES[0])
+    extracteur.convertir()
+    return extracteur.observations
 
 
 def _en_dict(spec) -> dict:

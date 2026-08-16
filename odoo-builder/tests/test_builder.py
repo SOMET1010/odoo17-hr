@@ -2216,3 +2216,101 @@ class TestConversionV12(unittest.TestCase):
         self.assertEqual(manque.genre, COMPORTEMENT)
         self.assertIn("Odoo 19 ne l'applique plus", manque.pourquoi)
         self.assertIn("sans erreur", manque.pourquoi)
+
+
+from converter.apports import ACQUIS, A_SAISIR, CATALOGUE, calculer, par_version  # noqa: E402
+
+
+class TestApportsDeVersion(unittest.TestCase):
+    """Ce que la version d'arrivée fait nativement là où le module fait à la main.
+
+    C'est l'autre moitié d'une migration : porter fidèlement un contournement
+    de v12 vers la v19 revient à réimplanter à grands frais ce que la v19
+    offre. Encore faut-il que la liste soit une information et non un
+    prospectus — d'où les deux règles que ces contrôles tiennent.
+    """
+
+    def _observations(self, module=None):
+        from converter.extraction import Extracteur
+        dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(dossier.cleanup)
+        racine = os.path.join(dossier.name, "suivi_dossier")
+        _copier_exemple(racine, dict(module or {}))
+        extracteur = Extracteur(racine, "17.0")
+        extracteur.convertir()
+        return extracteur.observations
+
+    def test_un_apport_absent_de_la_cible_n_est_pas_promis(self):
+        """« models.Constraint » n'existe qu'en 19 : le promettre en 17 serait faux.
+
+        C'est la règle qui donne son sens à la comparaison entre versions. Sans
+        elle, les trois cibles diraient la même chose, et l'outil ne
+        répondrait plus à « qu'est-ce que la 19 m'apporte de plus ».
+        """
+        observations = self._observations()
+        motifs = {a.regle.marqueur for a in calculer(observations, "17.0")}
+        self.assertNotIn("sql_constraints", motifs)
+        self.assertNotIn("group_operator", motifs)
+        self.assertIn("sql_constraints", {a.regle.marqueur
+                                          for a in calculer(observations, "19.0")})
+
+    def test_chaque_version_ajoute_a_la_precedente_sans_rien_retirer(self):
+        """Un apport acquis en 17 ne disparaît pas en 19."""
+        tables = par_version(self._observations())
+        for precedente, suivante in (("17.0", "18.0"), ("18.0", "19.0")):
+            avant = {a.regle.marqueur for a in tables[precedente]}
+            apres = {a.regle.marqueur for a in tables[suivante]}
+            self.assertTrue(avant <= apres,
+                            f"{sorted(avant - apres)} perdu(s) entre "
+                            f"{precedente} et {suivante}")
+        self.assertGreater(len(tables["19.0"]), len(tables["17.0"]))
+
+    def test_rien_n_est_annonce_que_le_module_ne_contienne(self):
+        """Pas de « saviez-vous que ». Chaque apport est ancré dans le module.
+
+        Un module qui ne fait rien à l'ancienne n'a rien à gagner : le dire
+        quand même transformerait le rapport en argumentaire, et personne ne
+        le lirait plus.
+        """
+        propre = ModuleSpec.depuis_dict({
+            "technical_name": "atelier_propre", "name": "Propre",
+            "cible": "17.0",
+            "models": [{"name": "propre.chose", "fields": [
+                {"name": "name", "type": "char", "string": "Nom"}]}],
+        })
+        rendu = OdooModuleGenerator().generate(propre)
+        with tempfile.TemporaryDirectory() as dossier:
+            racine = _ecrire_module(dossier, rendu)
+            _, rapport = convertir(racine, "19.0")
+        self.assertEqual(rapport.apports, [],
+                         "un module déjà moderne n'a aucun apport à recevoir")
+
+    def test_chaque_apport_ancre_son_motif_dans_un_fichier(self):
+        for apport in calculer(self._observations(), "19.0"):
+            self.assertTrue(apport.fichier, f"{apport.regle.marqueur} sans fichier")
+
+    def test_les_apports_distinguent_l_acquis_du_reste(self):
+        """« <list> » est acquis par régénération ; « aggregator » demande une réécriture.
+
+        Confondre les deux ferait croire que la conversion a modernisé du code
+        qu'elle n'a même pas repris.
+        """
+        apports = {a.regle.marqueur: a.regle.genre
+                   for a in calculer(self._observations(), "19.0")}
+        self.assertEqual(apports["balise_tree"], ACQUIS)
+        self.assertEqual(apports["attrs"], ACQUIS)
+        self.assertEqual(apports["group_operator"], A_SAISIR)
+        self.assertEqual(apports["sql_constraints"], A_SAISIR)
+
+    def test_chaque_regle_du_catalogue_porte_sa_verification(self):
+        """Une règle qu'on ne sait pas justifier n'a rien à faire dans le catalogue.
+
+        C'est la même discipline que pour le dialecte : une différence
+        supposée est pire qu'une différence ignorée, parce qu'elle produit une
+        recommandation qui a l'air juste.
+        """
+        for regle in CATALOGUE:
+            self.assertTrue(regle.verification.strip(),
+                            f"« {regle.marqueur} » sans vérification")
+            self.assertIn(regle.depuis, (17, 18, 19))
+            self.assertIn(regle.genre, (ACQUIS, A_SAISIR))

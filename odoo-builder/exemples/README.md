@@ -37,6 +37,30 @@ sans être chargé par l'instance qui le monte.
 Les tests et la recette multi-versions lisent ce dossier — pas une copie.
 Deux copies divergeraient, et l'une se corrigerait sans l'autre.
 
+## Ce que la version d'arrivée apporte
+
+    python3 cli/convertir.py exemples/suivi_dossier --cible 19.0 --comparer-versions
+
+L'autre moitié d'une migration. Porter fidèlement un contournement écrit pour
+la v12 revient à réimplanter en v19 ce que la v19 sait faire — on obtient un
+module qui marche et qui coûte cher.
+
+Deux règles, sans lesquelles la liste serait un prospectus :
+
+1. un apport n'est cité que si le module **contient** le motif qu'il remplace,
+   fichier et ligne à l'appui ;
+2. un apport n'est cité que s'il existe **dans la version visée** — c'est ce
+   qui fait qu'une conversion vers 17 et une vers 19 ne disent pas la même
+   chose, et donc ce qui répond à « qu'est-ce que la 19 m'apporte de plus ».
+
+Les apports sont séparés en deux : **acquis** (la régénération vous les donne
+sans rien écrire — `<list>`, attributs de vue directs) et **à saisir** (ils
+portent sur du code que le convertisseur ne reprend pas ; il faut réécrire —
+`models.Constraint`, `aggregator`, `_compute_display_name`).
+
+Rien n'est appliqué. Réécrire à la place de l'auteur supposerait de comprendre
+son intention, et le convertisseur ne comprend rien : il lit.
+
 ## D'où vient ce que le convertisseur sait des versions
 
 Deux sources, et jamais la mémoire.
