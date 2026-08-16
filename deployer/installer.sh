@@ -228,11 +228,20 @@ case "$MODE" in
       DOMAINE="${adresse//./-}.sslip.io"
       info "aucun domaine fourni : « $DOMAINE » (dérivé de l'adresse)."
     fi
-    for port in 80 443; do
-      if ss -ltn 2>/dev/null | grep -q ":$port "; then
-        fatal "le port $port est déjà pris ; la passerelle ne pourra pas l'ouvrir."
-      fi
-    done
+    # Les ports 80 et 443 sont peut-être déjà pris… par notre propre passerelle,
+    # d'une installation précédente. Le contrôle doit distinguer « occupé par un
+    # tiers » de « occupé par nous » : sinon rejouer l'installeur échoue
+    # systématiquement, et un installeur qu'on ne peut pas rejouer n'en est pas un.
+    if $DOCKER compose --profile passerelle ps --format '{{.Service}} {{.State}}' 2>/dev/null \
+         | grep -q '^passerelle .*[Rr]unning'; then
+      info "la passerelle tourne déjà : elle détient les ports, on la remplace."
+    else
+      for port in 80 443; do
+        if ss -ltn 2>/dev/null | grep -q ":$port "; then
+          fatal "le port $port est pris par un autre service ; la passerelle ne pourra pas l'ouvrir."
+        fi
+      done
+    fi
     PROFILS+=(--profile passerelle)
     # Derrière la passerelle seulement : sur une instance directement exposée,
     # cette option ferait confiance à des en-têtes falsifiables.
