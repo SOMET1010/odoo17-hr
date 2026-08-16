@@ -31,6 +31,9 @@ TYPES_CHAMPS = {
 TYPES_VUES = {"form", "tree", "kanban", "search", "calendar", "pivot", "graph"}
 
 
+from generator.dialecte import CIBLES  # noqa: E402
+
+
 class SpecInvalide(Exception):
     """La spécification ne décrit pas un module réalisable."""
 
@@ -245,7 +248,12 @@ class ModuleSpec:
     summary: str = ""
     description: str = ""
     category: str = "Uncategorized"
-    version: str = "17.0.1.0.0"
+    # « cible » est la version d'Odoo visée ; « version » celle du module,
+    # purement fonctionnelle. Les séparer est ce qui permet à une même
+    # spécification de produire un module pour 17, 18 et 19 sans que la
+    # logique métier soit dupliquée — dupliquée, elle divergerait.
+    cible: str = "17.0"
+    version: str = "1.0.0"
     license: str = "LGPL-3"
     depends: list[str] = field(default_factory=lambda: ["base"])
     application: bool = True
@@ -282,6 +290,17 @@ class ModuleSpec:
                 transitions=[Transition(**t) for t in brut.get("transitions", [])],
             )
 
+        # Ancienne forme : « 17.0.1.0.0 » portait les deux notions d'un coup.
+        # On la coupe plutôt que de la refuser : des spécifications écrites
+        # avant cette séparation existent, et rien ne justifie de les casser.
+        cible = donnee.get("cible", "")
+        version = donnee.get("version", "1.0.0")
+        ancienne = re.fullmatch(r"(\d+\.\d+)\.(\d+\.\d+\.\d+)", str(version))
+        if ancienne:
+            cible = cible or ancienne.group(1)
+            version = ancienne.group(2)
+        cible = cible or "17.0"
+
         try:
             spec = ModuleSpec(
                 technical_name=donnee["technical_name"],
@@ -289,7 +308,8 @@ class ModuleSpec:
                 summary=donnee.get("summary", ""),
                 description=donnee.get("description", ""),
                 category=donnee.get("category", "Uncategorized"),
-                version=donnee.get("version", "17.0.1.0.0"),
+                cible=cible,
+                version=version,
                 license=donnee.get("license", "LGPL-3"),
                 depends=donnee.get("depends") or ["base"],
                 application=donnee.get("application", True),
@@ -330,6 +350,14 @@ class ModuleSpec:
             raise SpecInvalide("Le module doit déclarer un nom affichable.")
         if not self.depends:
             raise SpecInvalide("Le module doit déclarer au moins une dépendance.")
+        # Une cible non éprouvée par la recette multi-versions n'est pas une
+        # cible : on refuserait plus tard, à l'installation, avec un message
+        # d'Odoo qui ne dirait pas d'où vient la faute.
+        if self.cible not in CIBLES:
+            raise SpecInvalide(
+                f"Version d'Odoo visée inconnue : « {self.cible} ». "
+                f"Attendu l'une de {', '.join(CIBLES)}."
+            )
 
         for element in (*self.models, *self.views, *self.actions, *self.menus, *self.access):
             element.valider()

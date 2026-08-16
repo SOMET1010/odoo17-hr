@@ -1689,3 +1689,115 @@ class TestSecoursIllusoire(unittest.TestCase):
         })
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(atelier_odoo.commande_providers(self.Args(exigeant=True)), 0)
+
+
+# ------------------------------------------------------------- multi-versions
+
+from generator.dialecte import CIBLES, CibleInconnue, Dialecte  # noqa: E402
+
+
+class TestDialecte(unittest.TestCase):
+    """Ce qui change d'une version à l'autre, et rien d'autre.
+
+    Chaque règle ici doit être vérifiée par l'installation réelle dans l'image
+    correspondante. Une différence supposée est pire qu'une différence
+    ignorée : elle produit du code qui a l'air juste.
+    """
+
+    def test_la_balise_liste_change_en_18(self):
+        self.assertEqual(Dialecte("17.0").balise_liste, "tree")
+        self.assertEqual(Dialecte("18.0").balise_liste, "list")
+        self.assertEqual(Dialecte("19.0").balise_liste, "list")
+
+    def test_le_mode_de_vue_suit_la_balise(self):
+        """Une action en « tree » ouvrirait une vue introuvable en 18."""
+        self.assertEqual(Dialecte("17.0").mode_vue("tree"), "tree")
+        self.assertEqual(Dialecte("18.0").mode_vue("tree"), "list")
+
+    def test_les_autres_modes_ne_bougent_pas(self):
+        for cible in CIBLES:
+            for mode in ("form", "kanban", "calendar", "pivot", "graph"):
+                self.assertEqual(Dialecte(cible).mode_vue(mode), mode)
+
+    def test_la_version_du_manifeste_porte_celle_d_odoo(self):
+        """C'est ce préfixe qui dit à Odoo qu'un module doit être mis à jour."""
+        self.assertEqual(Dialecte("18.0").version_manifeste("1.0.0"), "18.0.1.0.0")
+
+    def test_une_cible_non_eprouvee_est_refusee(self):
+        with self.assertRaises(CibleInconnue):
+            Dialecte("16.0")
+
+
+class TestGenerationMultiVersions(unittest.TestCase):
+    """Une même spécification, trois modules, une seule logique métier."""
+
+    def _pour(self, cible):
+        donnee = json.loads(json.dumps(MINIMAL))
+        donnee["cible"] = cible
+        spec = ModuleSpec.depuis_dict(donnee)
+        return spec, OdooModuleGenerator().generate(spec)
+
+    def _fichier(self, fichiers, suffixe):
+        return next(c for n, c in fichiers.items() if n.endswith(suffixe))
+
+    def test_la_balise_de_vue_suit_la_cible(self):
+        self.assertIn("<tree", self._fichier(self._pour("17.0")[1], "_views.xml"))
+        for cible in ("18.0", "19.0"):
+            vues = self._fichier(self._pour(cible)[1], "_views.xml")
+            self.assertIn("<list", vues)
+            self.assertNotIn("<tree", vues)
+
+    def test_le_manifeste_prefixe_la_version_d_odoo(self):
+        for cible in CIBLES:
+            manifeste = self._fichier(self._pour(cible)[1], "__manifest__.py")
+            self.assertIn(f"'version': '{cible}.", manifeste)
+
+    def test_les_trois_versions_passent_la_validation(self):
+        for cible in CIBLES:
+            spec, fichiers = self._pour(cible)
+            rapport = OdooStaticValidator().check(fichiers, spec)
+            self.assertTrue(rapport.ok, f"{cible} : {rapport.texte()}")
+
+    def test_le_python_est_identique_d_une_version_a_l_autre(self):
+        """La logique métier ne se duplique pas : dupliquée, elle divergerait.
+
+        Seule la présentation change. Si un jour le Python devait différer, ce
+        test tomberait — et ce serait une décision à prendre, pas un effet de
+        bord à découvrir.
+        """
+        modeles = {}
+        for cible in CIBLES:
+            fichiers = self._pour(cible)[1]
+            modeles[cible] = {n: c for n, c in fichiers.items()
+                              if n.endswith(".py") and "models/" in n}
+        reference = modeles[CIBLES[0]]
+        for cible in CIBLES[1:]:
+            self.assertEqual(modeles[cible], reference, f"le Python diffère en {cible}")
+
+
+class TestCibleDansLaSpecification(unittest.TestCase):
+    """L'ancienne forme « 17.0.1.0.0 » portait deux notions d'un coup."""
+
+    def test_l_ancienne_forme_est_coupee_en_deux(self):
+        spec = ModuleSpec.depuis_dict({**json.loads(json.dumps(MINIMAL)),
+                                       "version": "17.0.2.3.4"})
+        self.assertEqual(spec.cible, "17.0")
+        self.assertEqual(spec.version, "2.3.4")
+
+    def test_la_nouvelle_forme_est_prise_telle_quelle(self):
+        spec = ModuleSpec.depuis_dict({**json.loads(json.dumps(MINIMAL)),
+                                       "cible": "19.0", "version": "2.3.4"})
+        self.assertEqual((spec.cible, spec.version), ("19.0", "2.3.4"))
+
+    def test_une_version_fonctionnelle_courte_n_est_pas_coupee(self):
+        """« 1.0.0 » n'est pas une version d'Odoo suivie d'un reste."""
+        spec = ModuleSpec.depuis_dict({**json.loads(json.dumps(MINIMAL)),
+                                       "version": "1.0.0"})
+        self.assertEqual((spec.cible, spec.version), ("17.0", "1.0.0"))
+
+    def test_une_cible_inconnue_est_refusee_a_la_lecture(self):
+        with self.assertRaises(SpecInvalide):
+            ModuleSpec.depuis_dict({**json.loads(json.dumps(MINIMAL)), "cible": "16.0"})
+
+    def test_le_defaut_reste_17_pour_ne_rien_casser(self):
+        self.assertEqual(ModuleSpec.depuis_dict(json.loads(json.dumps(MINIMAL))).cible, "17.0")

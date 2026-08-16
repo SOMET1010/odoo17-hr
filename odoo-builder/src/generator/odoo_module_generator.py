@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape, quoteattr
 
+from generator.dialecte import Dialecte
 from spec.expression import Expression
 from spec.module_spec import Modele, ModuleSpec, Vue
 
@@ -29,6 +30,10 @@ def _litteral(valeur) -> str:
 
 class OdooModuleGenerator:
     def generate(self, spec: ModuleSpec) -> dict[str, str]:
+        # Un dialecte par génération : la même spécification produit un module
+        # différent selon la version visée, sans que rien du modèle
+        # fonctionnel ne change.
+        self.dialecte = Dialecte(spec.cible)
         fichiers: dict[str, str] = {}
         racine = spec.technical_name
 
@@ -84,7 +89,7 @@ class OdooModuleGenerator:
             ENTETE,
             "{\n",
             f"    'name': {_litteral(spec.name)},\n",
-            f"    'version': {_litteral(spec.version)},\n",
+            f"    'version': {_litteral(self.dialecte.version_manifeste(spec.version))},\n",
             f"    'category': {_litteral(spec.category)},\n",
             f"    'summary': {_litteral(spec.summary)},\n",
         ]
@@ -265,7 +270,9 @@ class OdooModuleGenerator:
             blocs.append(f'        <field name="name">{escape(action.name)}</field>\n')
             blocs.append(f'        <field name="res_model">{escape(action.model)}</field>\n')
             blocs.append(
-                f'        <field name="view_mode">{escape(",".join(action.view_modes))}</field>\n'
+                f'        <field name="view_mode">'
+                f'{escape(",".join(self.dialecte.mode_vue(m) for m in action.view_modes))}'
+                f'</field>\n'
             )
             blocs.append(f'        <field name="domain">{escape(action.domain)}</field>\n')
             blocs.append(f'        <field name="context">{escape(action.context)}</field>\n')
@@ -331,7 +338,10 @@ class OdooModuleGenerator:
             )
         if vue.type == "search":
             return f"{marge}<search>\n{champs}{marge}</search>\n"
-        balise = {"tree": "tree", "calendar": "calendar", "pivot": "pivot", "graph": "graph"}[vue.type]
+        balise = {
+            "tree": self.dialecte.balise_liste,
+            "calendar": "calendar", "pivot": "pivot", "graph": "graph",
+        }[vue.type]
         supplement = ""
         if vue.type == "calendar" and vue.fields:
             supplement = f' date_start={quoteattr(vue.fields[-1])}'
