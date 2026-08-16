@@ -314,11 +314,25 @@ AVEC_COMPORTEMENT = {
                              "validations": [{"condition": "total > 0",
                                               "message": "Total nul."}]}],
         },
+    }, {
+        # Le modèle porteur de « line_ids ». Il manquait : le jeu d'essai
+        # décrivait une relation vers un modèle que personne ne créait, ce
+        # qu'Odoo aurait refusé. Aucun test ne pouvait le dire tant que la
+        # validation ignorait les relations.
+        "name": "essai.ligne",
+        "description": "Ligne",
+        "fields": [
+            {"name": "name", "type": "char", "string": "Libellé", "required": True},
+            {"name": "amount", "type": "float", "string": "Montant"},
+            {"name": "demande_id", "type": "many2one", "string": "Demande",
+             "comodel": "essai.demande"},
+        ],
     }],
     "views": [{"model": "essai.demande", "type": "form", "name": "Demande",
                "fields": ["name", "total"]}],
     "actions": [], "menus": [],
-    "access": [{"model": "essai.demande", "group": "base.group_user", "perms": "rwcd"}],
+    "access": [{"model": "essai.demande", "group": "base.group_user", "perms": "rwcd"},
+               {"model": "essai.ligne", "group": "base.group_user", "perms": "rwcd"}],
 }
 
 
@@ -1322,3 +1336,96 @@ class TestIdentifiantsOdoo(unittest.TestCase):
         """Une variable exportée vide est un oubli, pas un mot de passe vide."""
         os.environ["ODOO_ADMIN_MOTDEPASSE"] = ""
         self.assertEqual(acceptation.identifiants_odoo(), ("admin", "admin"))
+
+
+class TestRelationsEtDependances(unittest.TestCase):
+    """Une relation ne peut viser qu'un modèle réellement disponible.
+
+    Défaut observé en production : le modèle avait décrit un lien vers
+    « hr.employee » sans déclarer « hr » dans depends. Odoo n'a pas créé le
+    champ, puis la vue l'a réclamé, et l'installation a échoué sur
+    « Field employe_id does not exist in model mission.demande » — message qui
+    accuse la vue alors que la faute est dans le manifeste. La validation
+    statique laissait passer l'ensemble.
+    """
+
+    def _spec(self, depends, comodel):
+        return ModuleSpec.depuis_dict({
+            "technical_name": "gestion_missions", "name": "Gestion des missions",
+            "depends": depends,
+            "models": [{"name": "mission.demande", "description": "Demande",
+                "fields": [
+                    {"name": "name", "type": "char", "string": "Objet",
+                     "required": True},
+                    {"name": "employe_id", "type": "many2one", "string": "Employé",
+                     "comodel": comodel},
+                ]}],
+            "views": [{"model": "mission.demande", "type": "tree",
+                       "name": "Demandes", "fields": ["name", "employe_id"],
+                       "invisible_fields": []}],
+            "actions": [{"id": "a", "name": "Demandes", "model": "mission.demande",
+                         "view_modes": ["tree", "form"]}],
+            "menus": [{"id": "m", "name": "Missions", "action": "a"}],
+            "access": [{"model": "mission.demande", "group": "base.group_user"}],
+        })
+
+    def _rapport(self, depends, comodel="hr.employee"):
+        spec = self._spec(depends, comodel)
+        return OdooStaticValidator().check(
+            OdooModuleGenerator().generate(spec), spec
+        )
+
+    def test_relation_vers_un_module_non_declare_est_refusee(self):
+        rapport = self._rapport(["base"])
+        self.assertFalse(rapport.ok)
+        self.assertIn("hr", rapport.texte())
+
+    def test_la_meme_relation_passe_si_le_module_est_declare(self):
+        self.assertTrue(self._rapport(["base", "hr"]).ok)
+
+    def test_res_partner_ne_demande_que_base(self):
+        """« res.* » vient de « base » : exiger un module « res » serait faux."""
+        self.assertTrue(self._rapport(["base"], "res.partner").ok)
+
+    def test_ir_attachment_ne_demande_que_base(self):
+        self.assertTrue(self._rapport(["base"], "ir.attachment").ok)
+
+    def test_un_module_tiers_est_reconnu_par_son_prefixe(self):
+        self.assertFalse(self._rapport(["base"], "ansut.agent").ok)
+        self.assertTrue(self._rapport(["base", "ansut"], "ansut.agent").ok)
+
+    def test_une_relation_interne_au_module_ne_demande_rien(self):
+        """Un modèle créé par le module lui-même est toujours disponible."""
+        spec = ModuleSpec.depuis_dict({
+            "technical_name": "gestion_missions", "name": "Missions",
+            "depends": ["base"],
+            "models": [
+                {"name": "mission.demande", "description": "Demande", "fields": [
+                    {"name": "name", "type": "char", "string": "Objet"},
+                    {"name": "frais_ids", "type": "one2many", "string": "Frais",
+                     "comodel": "mission.frais", "inverse_name": "demande_id"},
+                ]},
+                {"name": "mission.frais", "description": "Frais", "fields": [
+                    {"name": "name", "type": "char", "string": "Libellé"},
+                    {"name": "demande_id", "type": "many2one", "string": "Demande",
+                     "comodel": "mission.demande"},
+                ]},
+            ],
+            "views": [{"model": "mission.demande", "type": "tree", "name": "D",
+                       "fields": ["name"], "invisible_fields": []}],
+            "actions": [{"id": "a", "name": "D", "model": "mission.demande",
+                         "view_modes": ["tree", "form"]}],
+            "menus": [{"id": "m", "name": "Missions", "action": "a"}],
+            "access": [{"model": "mission.demande", "group": "base.group_user"},
+                       {"model": "mission.frais", "group": "base.group_user"}],
+        })
+        rapport = OdooStaticValidator().check(
+            OdooModuleGenerator().generate(spec), spec
+        )
+        self.assertTrue(rapport.ok, rapport.texte())
+
+    def test_le_contrat_enonce_la_regle_au_modele(self):
+        """Le modèle doit connaître la règle avant, pas seulement après refus."""
+        from spec.drafter import CONTRAT
+        self.assertIn("hr.employee", CONTRAT)
+        self.assertIn("depends", CONTRAT)

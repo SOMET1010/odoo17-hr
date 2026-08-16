@@ -104,7 +104,13 @@ RÈGLES QUI FONT REFUSER UNE SPÉCIFICATION :
 - chaque état non initial doit être atteint par une transition, et tout état
   non final doit pouvoir être quitté ;
 - si un domaine de vue référence un champ, ce champ doit figurer dans la vue,
-  au besoin via "invisible_fields".
+  au besoin via "invisible_fields" ;
+- toute relation (many2one, one2many, many2many) vers un modèle que ce module
+  ne crée pas impose que le module qui le fournit figure dans "depends" :
+  "hr.employee" impose "hr", "product.product" impose "product",
+  "account.move" impose "account". Les modèles "res.*" et "ir.*" viennent de
+  "base". Sans cette dépendance, Odoo ne crée pas le champ, et l'installation
+  échoue plus tard sur la vue qui le réclame.
 
 Choisis des noms techniques parlants et des libellés en français."""
 
