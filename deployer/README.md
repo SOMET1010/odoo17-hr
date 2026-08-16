@@ -156,6 +156,54 @@ téléverser du code sous OEEL-1 serait le publier. Les recettes automatiques
 restent donc en édition communautaire, et ce qui dépend d'Enterprise se vérifie
 sur votre serveur. C'est une limite assumée, pas un oubli.
 
+## Passer le dépôt en privé
+
+Ce dépôt contient des modules sous `OEEL-1`, dont la redistribution est
+interdite. S'il est public, ils le sont aussi.
+
+Le basculement casserait une chose : le serveur tire ses mises à jour par un
+`git pull` anonyme. On prépare donc l'accès **avant** de basculer, tant que le
+dépôt est encore public et qu'on peut vérifier que ça marche.
+
+```bash
+cd /opt/atelier && bash deployer/depot-prive.sh
+```
+
+Le script crée une **clé de déploiement** — une paire SSH propre à ce dépôt et
+à cette machine, en lecture seule — affiche la partie publique à coller dans
+GitHub, puis vérifie que le dépôt répond par cette clé. Si la vérification
+échoue, il **remet l'origine d'avant** : un serveur qui tire encore vaut mieux
+qu'un serveur bloqué par une configuration à moitié faite.
+
+Pourquoi pas un jeton d'accès personnel : il ouvrirait *tous* vos dépôts, et se
+retrouverait en clair dans l'URL du dépôt, que `git remote -v` affiche à qui
+passe. Une clé de déploiement ne vaut que pour un dépôt, se révoque seule, et
+sa partie privée ne quitte jamais la machine.
+
+Une fois le script au vert, le basculement se fait dans GitHub :
+**Settings → General → Danger Zone → Change visibility.**
+
+### Installer une machine neuve, dépôt déjà privé
+
+La commande d'installation en une ligne clone anonymement : elle ne marchera
+plus. Il faut donner sa clé à la machine avant qu'elle puisse lire le dépôt :
+
+```bash
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/atelier_depot -C "atelier-$(hostname)"
+cat ~/.ssh/atelier_depot.pub          # à coller dans Deploy keys, sans écriture
+printf 'Host github-atelier\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/atelier_depot\n    IdentitiesOnly yes\n' >> ~/.ssh/config
+git clone -b claude/odoo-react-alchemy-handoff-hmig21 git@github-atelier:SOMET1010/odoo17-hr.git /opt/atelier
+bash /opt/atelier/deployer/installer.sh --https
+```
+
+### Ce que le privé change aussi
+
+Les exécutions de la forge cessent d'être gratuites : sur un dépôt public,
+GitHub Actions ne consomme aucun quota ; sur un dépôt privé, chaque minute est
+décomptée d'un forfait mensuel. Nos recettes durent deux à quatre minutes
+chacune — c'est tenable, mais ce n'est plus illimité, et il vaut mieux le
+savoir avant de voir les exécutions s'arrêter en milieu de mois.
+
 ## Jouer le test d'acceptation
 
 C'est le seul maillon qu'aucun test automatique ne couvre : l'appel réel au
