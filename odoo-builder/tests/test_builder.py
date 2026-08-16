@@ -911,3 +911,65 @@ class TestDiagnostic(unittest.TestCase):
         temoin = FournisseurQuiRepond({"ok": True})
         verifier("x", temoin)
         self.assertEqual(temoin.appels, 1)
+
+
+class TestTraceDuRouteur(unittest.TestCase):
+    """Sans trace, une acceptation verte n'est pas reproductible."""
+
+    def test_le_fournisseur_et_le_modele_sont_consignes(self):
+        routeur = RouterProvider(
+            etapes=[Etape("kimi", ScriptedProvider([{"ok": True}], modele="kimi-k3"))],
+            journal=lambda _: None,
+        )
+        routeur.completer_json("c", "x")
+        resume = routeur.resume()
+        self.assertEqual(resume["fournisseur"], "kimi")
+        self.assertEqual(resume["modele"], "kimi-k3")
+        self.assertEqual(resume["basculements"], 0)
+
+    def test_un_basculement_apparait_dans_la_trace(self):
+        routeur = RouterProvider(
+            etapes=[
+                Etape("premier", FournisseurEnPanne("503")),
+                Etape("second", ScriptedProvider([{"ok": True}], modele="gpt-x")),
+            ],
+            journal=lambda _: None,
+        )
+        routeur.completer_json("c", "x")
+        resume = routeur.resume()
+        self.assertEqual(resume["fournisseur"], "second")
+        self.assertEqual(resume["modele"], "gpt-x")
+        self.assertEqual(resume["basculements"], 1)
+        # Les deux passages figurent, sous le même numéro d'appel.
+        self.assertEqual([e["fournisseur"] for e in resume["trace"]], ["premier", "second"])
+        self.assertEqual({e["appel"] for e in resume["trace"]}, {1})
+
+    def test_les_corrections_successives_sont_comptees(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "INVALIDE"
+        correcte = json.loads(json.dumps(MINIMAL))
+        routeur = RouterProvider(
+            etapes=[Etape("a", ScriptedProvider([fautive, correcte], modele="m"))],
+            journal=lambda _: None,
+        )
+        redacteur = _Drafter(routeur, tentatives_max=2)
+        redacteur.draft("un besoin")
+        # Une tentative refusée puis une acceptée : une correction.
+        self.assertEqual(len(redacteur.tentatives), 2)
+        self.assertEqual(routeur.resume()["appels"], 2)
+
+    def test_la_trace_ne_contient_aucun_secret(self):
+        secrete = "sk-SECRET-QUI-NE-DOIT-PAS-APPARAITRE"
+        os.environ["CLE_POUR_TRACE"] = secrete
+        try:
+            routeur = routeur_depuis_config({"fournisseurs": [
+                {"nom": "a", "protocole": "openai",
+                 "url": "http://127.0.0.1:9/v1/chat/completions",
+                 "modele": "m", "cle_env": "CLE_POUR_TRACE"},
+            ]}, journal=lambda _: None)
+            with self.assertRaises(ErreurFournisseur):
+                routeur.completer_json("c", "x")
+            self.assertNotIn(secrete, json.dumps(routeur.resume(), ensure_ascii=False))
+            self.assertNotIn(secrete, "\n".join(routeur.incidents))
+        finally:
+            os.environ.pop("CLE_POUR_TRACE", None)

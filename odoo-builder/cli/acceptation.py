@@ -23,6 +23,7 @@ Le critère de réussite n'est pas « le JSON est joli » :
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -69,7 +70,11 @@ def principal() -> int:
     odoo_url = os.environ.get("ODOO_URL", "http://localhost:8069")
     base = os.environ.get("ODOO_BASE", "ansut")
 
-    print(f"{GRAS}=== Le besoin, tel qu'il est soumis au modèle ==={FIN}")
+    print(f"{GRAS}=== Fournisseurs ==={FIN}")
+    noms = getattr(fournisseur, "noms", None)
+    print(f"  routeur : {', '.join(noms)}" if noms else "  fournisseur unique")
+
+    print(f"\n{GRAS}=== Le besoin, tel qu'il est soumis au modèle ==={FIN}")
     print(BESOIN)
 
     # --- 1. Le modèle rédige la spécification, sans retouche.
@@ -83,7 +88,8 @@ def principal() -> int:
     controle(True, f"Spécification rédigée : « {spec.technical_name} »")
     controle(
         len(redacteur.tentatives) >= 1,
-        f"Tentatives de rédaction : {len(redacteur.tentatives)}",
+        f"Corrections du ModuleSpec : {len(redacteur.tentatives) - 1} "
+        f"(sur {len(redacteur.tentatives)} tentative(s))",
     )
 
     modeles = [m.name for m in spec.modeles_nouveaux]
@@ -134,9 +140,7 @@ def principal() -> int:
     except ErreurRuntime as erreur:
         controle(False, f"Exécution : {erreur}")
         return rendre_verdict()
-    if resultat is False:
-        return rendre_verdict()
-
+    consigner(fournisseur, redacteur, spec)
     return rendre_verdict()
 
 
@@ -205,6 +209,39 @@ def _valeur_exemple(champ):
         "integer": 1, "float": 1.0, "monetary": 0.0, "boolean": True,
         "date": "2026-01-10", "datetime": "2026-01-10 08:00:00",
     }.get(champ.type, "Recette d'acceptation")
+
+
+def consigner(fournisseur, redacteur, spec) -> dict:
+    """Ce qu'il faut garder pour rejouer la recette et comparer les modèles.
+
+    Aucun secret : le nom du fournisseur, celui du modèle, et des compteurs.
+    """
+    recette = {
+        "fournisseur": getattr(fournisseur, "dernier_utilise", "unique"),
+        "modele": getattr(fournisseur, "dernier_modele", None)
+        or getattr(fournisseur, "modele", None),
+        "corrections_modulespec": max(0, len(redacteur.tentatives) - 1),
+        "tentatives_redaction": len(redacteur.tentatives),
+        "module": getattr(spec, "technical_name", None),
+    }
+    if hasattr(fournisseur, "resume"):
+        resume = fournisseur.resume()
+        recette["basculements"] = resume["basculements"]
+        recette["trace"] = resume["trace"]
+
+    print(f"\n{GRAS}=== Recette, pour rejouer et comparer ==={FIN}")
+    print(f"  fournisseur              : {recette['fournisseur']}")
+    print(f"  modèle                   : {recette['modele']}")
+    print(f"  corrections du ModuleSpec: {recette['corrections_modulespec']}")
+    if "basculements" in recette:
+        print(f"  basculements du routeur  : {recette['basculements']}")
+
+    destination = os.environ.get("ACCEPTATION_TRACE")
+    if destination:
+        with open(destination, "w", encoding="utf-8") as f:
+            json.dump(recette, f, ensure_ascii=False, indent=2)
+        print(f"  trace écrite dans        : {destination}")
+    return recette
 
 
 def rendre_verdict() -> int:

@@ -49,9 +49,13 @@ class RouterProvider(AIProvider):
 
     etapes: list[Etape]
     journal: object = print
-    # Trace de ce qui s'est passé, utile au test d'acceptation.
+    # Trace de ce qui s'est passé : quel fournisseur, quel modèle, à quel
+    # appel. Sans elle, une acceptation verte n'est pas reproductible et deux
+    # fournisseurs ne sont pas comparables. Elle ne contient aucun secret.
     dernier_utilise: str | None = None
+    dernier_modele: str | None = None
     incidents: list[str] = field(default_factory=list)
+    trace: list[dict] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.etapes:
@@ -63,22 +67,46 @@ class RouterProvider(AIProvider):
 
     def completer_json(self, consigne: str, contexte: str) -> dict:
         echecs: list[str] = []
+        rang = len(self.trace) + 1
         for etape in self.etapes:
+            modele = self._modele(etape)
             try:
                 reponse = etape.fournisseur.completer_json(consigne, contexte)
             except ErreurFournisseur as erreur:
                 message = f"{etape.nom} : {erreur}"
                 echecs.append(message)
                 self.incidents.append(message)
+                self.trace.append({
+                    "appel": rang, "fournisseur": etape.nom, "modele": modele,
+                    "ok": False, "motif": str(erreur)[:200],
+                })
                 self._tracer(f"  fournisseur « {etape.nom} » indisponible — {erreur}")
                 continue
             self.dernier_utilise = etape.nom
-            self._tracer(f"  réponse obtenue de « {etape.nom} »")
+            self.dernier_modele = modele
+            self.trace.append({
+                "appel": rang, "fournisseur": etape.nom, "modele": modele, "ok": True,
+            })
+            self._tracer(f"  réponse obtenue de « {etape.nom} » ({modele})")
             return reponse
 
         raise ErreurFournisseur(
             "aucun fournisseur n'a répondu :\n  - " + "\n  - ".join(echecs)
         )
+
+    @staticmethod
+    def _modele(etape: Etape) -> str:
+        return getattr(etape.fournisseur, "modele", "?")
+
+    def resume(self) -> dict:
+        """Ce qu'il faut consigner pour rendre une recette reproductible."""
+        return {
+            "fournisseur": self.dernier_utilise,
+            "modele": self.dernier_modele,
+            "appels": len({e["appel"] for e in self.trace}),
+            "basculements": sum(1 for e in self.trace if not e["ok"]),
+            "trace": list(self.trace),
+        }
 
     def _tracer(self, message: str) -> None:
         if callable(self.journal):

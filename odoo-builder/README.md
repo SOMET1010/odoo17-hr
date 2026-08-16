@@ -238,6 +238,21 @@ Il soumet le besoin des missions en français, sans retouche du JSON, et exige
 que la chaîne aille jusqu'à l'exécution : module installé, champ calculé égal à
 la somme des lignes, transition qui change l'état en base. Verdict binaire.
 
+Il consigne aussi la **recette** — sans quoi une acceptation verte ne serait ni
+reproductible ni comparable d'un fournisseur à l'autre :
+
+```
+=== Recette, pour rejouer et comparer ===
+  fournisseur              : kimi
+  modèle                   : kimi-k3
+  corrections du ModuleSpec: 1
+  basculements du routeur  : 0
+```
+
+`ACCEPTATION_TRACE=/chemin/trace.json` écrit en plus la trace détaillée, appel
+par appel. Elle ne contient que des noms et des compteurs — **jamais de clé**,
+et un test le vérifie.
+
 L'installation réelle est prouvée par l'**étape 9** de
 `.docker/verifier-runtime.sh`, qui va jusqu'à l'exécution : elle installe le
 module des missions, crée une demande, ajoute un frais, vérifie que le champ

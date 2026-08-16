@@ -264,8 +264,9 @@ class ScriptedProvider(AIProvider):
     d'API et sans réseau.
     """
 
-    def __init__(self, reponses: list[dict]):
+    def __init__(self, reponses: list[dict], modele: str = "scripte"):
         self.reponses = list(reponses)
+        self.modele = modele
         self.appels: list[tuple[str, str]] = []
 
     def completer_json(self, consigne: str, contexte: str) -> dict:
