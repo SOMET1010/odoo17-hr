@@ -29,7 +29,7 @@ import sys
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
-from ai.provider import fournisseur_depuis_environnement  # noqa: E402
+from ai.provider import fournisseur_configure  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import OdooInstallClient  # noqa: E402
 from installer.odoo_runtime import ErreurRuntime, OdooRuntime  # noqa: E402
@@ -56,7 +56,7 @@ def controle(ok: bool, message: str) -> bool:
 
 
 def principal() -> int:
-    fournisseur = fournisseur_depuis_environnement()
+    fournisseur = fournisseur_configure(print)
     if fournisseur is None:
         print(f"{ROUGE}Aucun fournisseur de modèle : définir BUILDER_IA_CLE "
               f"ou OPENAI_API_KEY.{FIN}")

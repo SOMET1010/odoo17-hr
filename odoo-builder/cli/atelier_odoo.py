@@ -19,7 +19,7 @@ import sys
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
-from ai.provider import fournisseur_depuis_environnement  # noqa: E402
+from ai.provider import fournisseur_configure  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import (  # noqa: E402
     ErreurInstallation, OdooInstallClient, empaqueter,
@@ -39,7 +39,7 @@ def journal(message: str) -> None:
 def _charger_spec(args) -> ModuleSpec:
     """Depuis un fichier, ou depuis un besoin en français via le modèle."""
     if args.besoin:
-        fournisseur = fournisseur_depuis_environnement()
+        fournisseur = fournisseur_configure(journal)
         if fournisseur is None:
             raise SpecInvalide(
                 "Aucun fournisseur de modèle configuré (BUILDER_IA_CLE ou "
@@ -95,7 +95,7 @@ def commande_build(args) -> int:
             print("  Démarrer la pile : docker compose --profile installateur up -d")
             return 2
 
-    fournisseur = fournisseur_depuis_environnement()
+    fournisseur = fournisseur_configure(journal)
     if fournisseur is None and not args.sans_installation:
         journal("(aucun fournisseur de modèle : réparation automatique désactivée)")
 

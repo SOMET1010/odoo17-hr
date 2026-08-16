@@ -88,6 +88,113 @@ class OpenAIProvider(AIProvider):
             raise ErreurFournisseur(f"réponse inexploitable : {erreur}")
 
 
+class AnthropicProvider(AIProvider):
+    """Implémentation du protocole Anthropic.
+
+    Deuxième protocole, pour que le Builder ne dépende pas non plus d'un
+    format de requête unique. Anthropic n'a pas de « response_format » : on
+    demande le JSON dans la consigne, et on extrait l'objet de la réponse.
+    """
+
+    def __init__(
+        self,
+        cle_api: str,
+        modele: str = "claude-sonnet-5",
+        url: str = "https://api.anthropic.com/v1/messages",
+        version: str = "2023-06-01",
+        delai: int = 120,
+        jetons_max: int = 8192,
+    ):
+        self.cle_api = cle_api
+        self.modele = modele
+        self.url = url
+        self.version = version
+        self.delai = delai
+        self.jetons_max = jetons_max
+
+    def completer_json(self, consigne: str, contexte: str) -> dict:
+        if not self.cle_api:
+            raise ErreurFournisseur("clé absente pour le protocole Anthropic")
+        charge = json.dumps({
+            "model": self.modele,
+            "max_tokens": self.jetons_max,
+            "system": consigne + "\n\nRends uniquement l'objet JSON, sans texte autour.",
+            "messages": [{"role": "user", "content": contexte}],
+        }).encode("utf-8")
+
+        requete = urllib.request.Request(self.url, data=charge, method="POST")
+        requete.add_header("Content-Type", "application/json")
+        requete.add_header("x-api-key", self.cle_api)
+        requete.add_header("anthropic-version", self.version)
+
+        try:
+            with urllib.request.urlopen(requete, timeout=self.delai) as reponse:
+                donnee = json.loads(reponse.read().decode("utf-8"))
+        except urllib.error.HTTPError as erreur:
+            raise ErreurFournisseur(f"Anthropic a répondu {erreur.code} : {erreur.reason}")
+        except urllib.error.URLError as erreur:
+            raise ErreurFournisseur(f"Anthropic injoignable : {erreur.reason}")
+
+        try:
+            texte = "".join(
+                bloc.get("text", "") for bloc in donnee["content"]
+                if bloc.get("type") == "text"
+            )
+        except (KeyError, TypeError) as erreur:
+            raise ErreurFournisseur(f"réponse inexploitable : {erreur}")
+        return extraire_json(texte)
+
+
+def extraire_json(texte: str) -> dict:
+    """Isole l'objet JSON d'une réponse qui peut l'avoir enrobé.
+
+    Les modèles encadrent volontiers leur JSON de ```json … ``` ou d'une
+    phrase d'introduction, même quand on l'interdit. Plutôt que de refuser
+    une réponse par ailleurs correcte, on va chercher l'objet.
+    """
+    nettoye = texte.strip()
+    if nettoye.startswith("```"):
+        nettoye = nettoye.split("\n", 1)[-1]
+        if nettoye.rstrip().endswith("```"):
+            nettoye = nettoye.rstrip()[: -3]
+    nettoye = nettoye.strip()
+
+    try:
+        return json.loads(nettoye)
+    except json.JSONDecodeError:
+        pass
+
+    debut, fin = nettoye.find("{"), nettoye.rfind("}")
+    if debut == -1 or fin <= debut:
+        raise ErreurFournisseur("aucun objet JSON dans la réponse du modèle")
+    try:
+        return json.loads(nettoye[debut : fin + 1])
+    except json.JSONDecodeError as erreur:
+        raise ErreurFournisseur(f"JSON illisible dans la réponse : {erreur}")
+
+
+def fournisseur_configure(journal=None) -> AIProvider | None:
+    """Le fournisseur à utiliser : routeur si configuré, sinon simple.
+
+    Un fichier `routeur.json` à la racine du Builder — ou désigné par
+    BUILDER_IA_ROUTEUR — prend le pas sur la configuration à fournisseur
+    unique. Il n'est pas obligatoire : sans lui, rien ne change.
+    """
+    from ai.routeur import ConfigurationInvalide, routeur_depuis_fichier  # noqa: PLC0415
+
+    chemin = os.environ.get("BUILDER_IA_ROUTEUR") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "routeur.json",
+    )
+    if os.path.isfile(chemin):
+        try:
+            return routeur_depuis_fichier(chemin, journal or (lambda _: None))
+        except ConfigurationInvalide as erreur:
+            if journal:
+                journal(f"  routeur inutilisable ({erreur}) — repli sur l'environnement")
+    return fournisseur_depuis_environnement()
+
+
 def fournisseur_depuis_environnement() -> AIProvider | None:
     """Construit le fournisseur décrit par l'environnement, ou None.
 

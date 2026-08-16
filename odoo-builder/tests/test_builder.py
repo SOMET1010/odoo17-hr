@@ -668,3 +668,178 @@ class TestFournisseurConfigurable(unittest.TestCase):
         os.environ["OPENAI_API_KEY"] = "cle-de-test"
         fournisseur = fournisseur_depuis_environnement()
         self.assertIn("api.openai.com", fournisseur.url)
+
+
+# ------------------------------------------------------------------ routeur
+
+from ai.provider import AnthropicProvider, ErreurFournisseur, extraire_json  # noqa: E402
+from ai.routeur import (  # noqa: E402
+    ConfigurationInvalide, Etape, RouterProvider, routeur_depuis_config,
+)
+
+
+class FournisseurEnPanne(AIProvider):
+    """Indisponible : réseau, quota, 5xx — ce sur quoi le routeur bascule."""
+
+    def __init__(self, motif="503"):
+        self.motif = motif
+        self.appels = 0
+
+    def completer_json(self, consigne, contexte):
+        self.appels += 1
+        raise ErreurFournisseur(self.motif)
+
+
+class FournisseurQuiRepond(AIProvider):
+    def __init__(self, reponse):
+        self.reponse = reponse
+        self.appels = 0
+
+    def completer_json(self, consigne, contexte):
+        self.appels += 1
+        return self.reponse
+
+
+class TestRouteur(unittest.TestCase):
+    def test_bascule_sur_le_suivant_quand_le_premier_est_en_panne(self):
+        panne = FournisseurEnPanne("502 Bad Gateway")
+        secours = FournisseurQuiRepond({"ok": True})
+        routeur = RouterProvider(
+            etapes=[Etape("kimi", panne), Etape("openai", secours)],
+            journal=lambda _: None,
+        )
+        self.assertEqual(routeur.completer_json("c", "x"), {"ok": True})
+        self.assertEqual(routeur.dernier_utilise, "openai")
+        self.assertEqual(panne.appels, 1)
+        self.assertEqual(len(routeur.incidents), 1)
+
+    def test_l_ordre_est_respecte(self):
+        premier = FournisseurQuiRepond({"source": "premier"})
+        second = FournisseurQuiRepond({"source": "second"})
+        routeur = RouterProvider(
+            etapes=[Etape("a", premier), Etape("b", second)], journal=lambda _: None
+        )
+        self.assertEqual(routeur.completer_json("c", "x"), {"source": "premier"})
+        self.assertEqual(second.appels, 0)
+
+    def test_tous_en_panne_rend_une_erreur_qui_les_nomme(self):
+        routeur = RouterProvider(
+            etapes=[Etape("a", FournisseurEnPanne("429")),
+                    Etape("b", FournisseurEnPanne("timeout"))],
+            journal=lambda _: None,
+        )
+        with self.assertRaises(ErreurFournisseur) as capture:
+            routeur.completer_json("c", "x")
+        self.assertIn("429", str(capture.exception))
+        self.assertIn("timeout", str(capture.exception))
+
+    def test_une_specification_refusee_ne_fait_PAS_basculer(self):
+        """Le point de conception : panne ≠ spécification perfectible.
+
+        Un fournisseur qui répond correctement garde la main ; c'est le
+        rédacteur qui lui renvoie le motif du refus. Sans cette distinction,
+        une spécification simplement incomplète brûlerait toute la liste.
+        """
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "NOM-INVALIDE"      # refusé par ModuleSpec
+        correcte = json.loads(json.dumps(MINIMAL))
+
+        class Principal(AIProvider):
+            """Se trompe d'abord, se corrige ensuite — comme un vrai modèle."""
+
+            def __init__(self):
+                self.appels = 0
+
+            def completer_json(self, consigne, contexte):
+                self.appels += 1
+                return fautive if self.appels == 1 else correcte
+
+        principal = Principal()
+        secours = FournisseurQuiRepond(correcte)
+        routeur = RouterProvider(
+            etapes=[Etape("principal", principal), Etape("secours", secours)],
+            journal=lambda _: None,
+        )
+        rendue = _Drafter(routeur, tentatives_max=2).draft("un besoin")
+
+        self.assertEqual(rendue.technical_name, "mon_module")
+        # Le rédacteur a bien renvoyé le motif au MÊME fournisseur…
+        self.assertEqual(principal.appels, 2)
+        # …et le secours n'a jamais été sollicité : ce n'était pas une panne.
+        self.assertEqual(secours.appels, 0)
+
+
+class TestConfigurationDuRouteur(unittest.TestCase):
+    def setUp(self):
+        self.anciennes = {c: os.environ.get(c) for c in ("CLE_A", "CLE_B")}
+        os.environ["CLE_A"] = "valeur-a"
+        os.environ.pop("CLE_B", None)
+
+    def tearDown(self):
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_construit_depuis_une_description(self):
+        routeur = routeur_depuis_config({"fournisseurs": [
+            {"nom": "a", "protocole": "openai", "modele": "m", "cle_env": "CLE_A"},
+        ]}, journal=lambda _: None)
+        self.assertEqual(routeur.noms, ["a"])
+
+    def test_ignore_un_fournisseur_dont_la_cle_manque(self):
+        routeur = routeur_depuis_config({"fournisseurs": [
+            {"nom": "absent", "modele": "m", "cle_env": "CLE_B"},
+            {"nom": "present", "modele": "m", "cle_env": "CLE_A"},
+        ]}, journal=lambda _: None)
+        self.assertEqual(routeur.noms, ["present"])
+
+    def test_une_cle_en_clair_dans_la_configuration_est_refusee(self):
+        """La configuration reste versionnable : elle ne porte jamais de secret."""
+        for champ in ("cle", "api_key", "token", "key"):
+            with self.assertRaises(ConfigurationInvalide, msg=champ):
+                routeur_depuis_config({"fournisseurs": [
+                    {"nom": "a", "modele": "m", "cle_env": "CLE_A", champ: "sk-secret"},
+                ]}, journal=lambda _: None, tolerant=False)
+
+    def test_protocole_inconnu_refuse(self):
+        with self.assertRaises(ConfigurationInvalide):
+            routeur_depuis_config({"fournisseurs": [
+                {"nom": "a", "protocole": "maison", "modele": "m", "cle_env": "CLE_A"},
+            ]}, journal=lambda _: None, tolerant=False)
+
+    def test_aucun_fournisseur_utilisable(self):
+        with self.assertRaises(ConfigurationInvalide):
+            routeur_depuis_config({"fournisseurs": [
+                {"nom": "absent", "modele": "m", "cle_env": "CLE_B"},
+            ]}, journal=lambda _: None)
+
+    def test_l_exemple_livre_est_une_configuration_valide(self):
+        chemin = os.path.join(RACINE, "routeur.example.json")
+        with open(chemin, encoding="utf-8") as f:
+            donnee = json.load(f)
+        self.assertTrue(donnee["fournisseurs"])
+        for entree in donnee["fournisseurs"]:
+            self.assertIn("cle_env", entree)
+            for interdit in ("cle", "api_key", "token", "key"):
+                self.assertNotIn(interdit, entree)
+
+
+class TestExtractionJson(unittest.TestCase):
+    def test_json_nu(self):
+        self.assertEqual(extraire_json('{"a": 1}'), {"a": 1})
+
+    def test_json_entoure_de_balises(self):
+        self.assertEqual(extraire_json('```json\n{"a": 1}\n```'), {"a": 1})
+
+    def test_json_precede_de_bavardage(self):
+        self.assertEqual(extraire_json('Voici :\n{"a": 1}\nVoilà.'), {"a": 1})
+
+    def test_absence_de_json_signalee(self):
+        with self.assertRaises(ErreurFournisseur):
+            extraire_json("désolé, je ne peux pas")
+
+    def test_le_protocole_anthropic_exige_une_cle(self):
+        with self.assertRaises(ErreurFournisseur):
+            AnthropicProvider(cle_api="").completer_json("c", "x")

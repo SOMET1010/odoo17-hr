@@ -72,7 +72,41 @@ fournisseur ne touche aucun autre fichier.
 | `OpenAIProvider` | production — protocole OpenAI, appel HTTP direct, sans SDK |
 | `ScriptedProvider` | recettes et mode hors ligne — réponses déterministes |
 
-Le **protocole** est celui d'OpenAI ; l'**hôte**, le **modèle** et la **clé**
+### Le routeur : ne dépendre d'aucun fournisseur
+
+Copier `routeur.example.json` en `routeur.json` (ignoré par git) et l'adapter.
+Les fournisseurs sont essayés **dans l'ordre** ; on passe au suivant quand
+l'un est indisponible.
+
+```json
+{ "fournisseurs": [
+  { "nom": "kimi",      "protocole": "openai",    "url": "…", "modele": "…", "cle_env": "KIMI_API_KEY" },
+  { "nom": "openai",    "protocole": "openai",    "url": "…", "modele": "…", "cle_env": "OPENAI_API_KEY" },
+  { "nom": "anthropic", "protocole": "anthropic", "url": "…", "modele": "…", "cle_env": "ANTHROPIC_API_KEY" }
+] }
+```
+
+Deux protocoles sont gérés — `openai` et `anthropic` — pour ne pas dépendre
+non plus d'un format de requête unique. Un fournisseur dont la variable
+d'environnement n'est pas définie est simplement sauté : la même configuration
+sert sur plusieurs machines.
+
+**La configuration ne contient jamais de clé.** Elle nomme la variable
+d'environnement qui la porte, et le Builder **refuse** toute entrée où figure
+un champ `cle`, `api_key`, `token` ou `key` — un test le vérifie. Le fichier
+reste donc versionnable.
+
+**Ce sur quoi le routeur bascule, et ce sur quoi il ne bascule pas.** Il bascule
+sur une *panne* : réseau, 5xx, quota, délai, réponse illisible. Il ne bascule
+pas quand un fournisseur répond correctement mais que la spécification est
+refusée par le validateur — ce cas appartient au rédacteur, qui renvoie le
+motif au **même** modèle. Confondre les deux brûlerait toute la liste sur une
+spécification simplement perfectible.
+
+### Fournisseur unique
+
+Sans `routeur.json`, la configuration à fournisseur unique s'applique. Le
+**protocole** est celui d'OpenAI ; l'**hôte**, le **modèle** et la **clé**
 viennent de l'environnement. N'importe quel service exposant une API
 compatible OpenAI convient — un autre fournisseur, un service local, un proxy
 d'entreprise — sans toucher une ligne du Builder :

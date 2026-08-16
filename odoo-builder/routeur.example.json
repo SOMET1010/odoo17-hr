@@ -1,0 +1,34 @@
+{
+  "_commentaire": "Routeur de fournisseurs du Odoo Builder. Copier en routeur.json et adapter. Ce fichier ne contient JAMAIS de clé : il nomme la variable d'environnement qui la porte, et le Builder refuse toute configuration où une clé figure en clair. Les fournisseurs sont essayés dans l'ordre ; on bascule au suivant quand l'un est indisponible, jamais parce qu'une spécification est perfectible.",
+
+  "fournisseurs": [
+    {
+      "nom": "kimi",
+      "protocole": "openai",
+      "url": "https://api.moonshot.ai/v1/chat/completions",
+      "modele": "kimi-k3",
+      "cle_env": "KIMI_API_KEY"
+    },
+    {
+      "nom": "openai",
+      "protocole": "openai",
+      "url": "https://api.openai.com/v1/chat/completions",
+      "modele": "gpt-4o",
+      "cle_env": "OPENAI_API_KEY"
+    },
+    {
+      "nom": "anthropic",
+      "protocole": "anthropic",
+      "url": "https://api.anthropic.com/v1/messages",
+      "modele": "claude-sonnet-5",
+      "cle_env": "ANTHROPIC_API_KEY"
+    },
+    {
+      "nom": "local",
+      "protocole": "openai",
+      "url": "http://localhost:11434/v1/chat/completions",
+      "modele": "qwen2.5-coder",
+      "cle_env": "LOCAL_LLM_KEY"
+    }
+  ]
+}
