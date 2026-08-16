@@ -23,27 +23,16 @@ installé dans un vrai Odoo, mis à jour, et appelé. Tout le reste est marqué.
 | **Atelier local** — décrire, convertir, thème → aperçu → ZIP | Piloté au navigateur, du clic à l'archive |
 | **Générateur de thème** — charte → module + aperçu | Contraste WCAG mesuré ; couleurs vérifiées dans la page rendue |
 | **Déploiement** — installeur, HTTPS, dépôt privé, addons Enterprise | Instance réelle montée puis suspendue |
+| **Comptes et isolation** — chacun ses projets | Filtre dans le SQL, pas dans le Python ; piloté au navigateur |
+| **Atelier en ligne** — pile HTTPS sans Odoo ni base | Recette jouée à chaque envoi : TLS vérifié, porte fermée, dépôt durable |
 
-200 tests.
+229 tests.
 
 ---
 
 ## Ce qui reste, par ordre d'utilité
 
-### 1. Mettre l'Atelier en ligne — petit, et demandé
-
-Trois choses, et la première n'est pas négociable :
-
-- **authentification** : tel quel, l'Atelier lit des dossiers et fabrique du
-  code sans mot de passe. C'est acceptable sur `127.0.0.1`, jamais en ligne ;
-- **dépôt de ZIP** à la place du champ « chemin sur cette machine » : en
-  ligne, ce champ désignerait un dossier du serveur, pas du poste ;
-- **mise en service** derrière la passerelle HTTPS qui existe déjà.
-
-Coût machine : un CX22 à ~4 €/mois suffit. L'Atelier n'a besoin ni d'Odoo ni
-de base de données — le CPX32 à 35 €/mois était dimensionné pour Odoo.
-
-### 2. Élargir le vocabulaire de la spécification — le gros morceau
+### 1. Élargir le vocabulaire de la spécification — le gros morceau
 
 C'est **la** limite. Sur le parc de production, 232 comportements ne sont pas
 portés, et ils tiennent presque tous à ce que la spécification ne sait pas
@@ -64,14 +53,14 @@ Chacun est un chantier indépendant. L'héritage de vues est le plus rentable :
 il transforme l'Atelier d'un fabricant de modules neufs en un outil qui
 améliore l'existant.
 
-### 3. Mode extension
+### 2. Mode extension
 
 Un module qui hérite d'un module tiers et l'enrichit, sans en copier une
 ligne. Demande l'héritage de vues ci-dessus. C'est la réponse propre à
 « ne pas refaire la roue » — et la seule qui soit propre juridiquement pour
 un module payant.
 
-### 4. Assembleur pour `addons_odoo17_mtnd`
+### 3. Assembleur pour `addons_odoo17_mtnd`
 
 Le parc est rangé en `produit/version/module`, avec des ZIP et des dossiers
 mêlés, et un même module en deux exemplaires (`mails_tracker` 1.1.0 et v1.2,
@@ -80,7 +69,7 @@ plat et cohérent. **En attente** : les versions v18/v19 sous la convention
 `17.0.1.0.0` / `18.0.1.0.0` / `19.0.1.0.0` — que la matrice a confirmée
 obligatoire, pas décorative.
 
-### 5. Barre latérale du thème (LOT 07)
+### 4. Barre latérale du thème (LOT 07)
 
 Le seul élément de la maquette que le générateur ne fournit pas. Demande un
 composant OWL, donc du JavaScript, donc trois branches et un entretien à
@@ -106,8 +95,24 @@ d'Odoo 18 et le dossier écarté par la 19.
 1. **La licence** — accepter l'AGPL et bâtir sur l'OCA, ou rester
    propriétaire. À trancher **avant** d'industrialiser l'assembleur : elle
    détermine ce qu'on a le droit de reprendre.
-2. **Le serveur** — le rallumer pour l'Atelier en ligne (~4 €/mois) et pour
-   éprouver ce qui demande un vrai Odoo.
+2. **Le serveur** — tout est prêt côté logiciel ; il ne manque qu'une machine.
+
+   Pour l'Atelier seul : **un CX22 à ~4 €/mois suffit**. Il n'a besoin ni
+   d'Odoo ni de base de données — le CPX32 à 35 €/mois était dimensionné pour
+   Odoo. Une commande, sur une Ubuntu neuve :
+
+   ```
+   bash deployer/installer-atelier.sh --domaine atelier.exemple.fr \
+                                      --courriel vous@exemple.fr
+   ```
+
+   Sans domaine, un nom dérivé de l'adresse IP est employé (sslip.io) et le
+   certificat s'obtient dessus : rien à acheter. Le script affiche à la fin le
+   **code d'installation** du premier compte — à utiliser tout de suite, car
+   tant qu'aucun compte n'existe, l'instance attend le sien.
+
+   Une seconde machine reste utile pour ce qui demande un vrai Odoo : les
+   modules du parc converti, et la barre latérale du thème.
 3. **Deux points d'hygiène** — révoquer l'ancienne clé Moonshot, et passer
    `odoo17-hr` en privé (la clé de déploiement est prête et vérifiée).
 
