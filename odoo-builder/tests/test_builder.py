@@ -1141,3 +1141,84 @@ class TestCommandeProviders(unittest.TestCase):
             code = atelier_odoo.commande_providers(None)
         self.assertEqual(code, 2)
         self.assertIn(chemin, sortie.getvalue())
+
+
+# --------------------------------------------------- à qui appartient la clé
+
+from ai.detection import accepte, detecter, fournisseur_pour  # noqa: E402
+from ai.diagnostic import OK  # noqa: E402
+
+
+class FournisseurQuiRefuseLaCle(AIProvider):
+    def completer_json(self, consigne, contexte):
+        raise ErreurFournisseur(
+            "401 Unauthorized — Incorrect API key provided", code=401,
+            corps="Incorrect API key provided",
+        )
+
+
+class FournisseurQuiIgnoreLeModele(AIProvider):
+    """Clé acceptée, modèle inconnu : le cas d'une table de modèles périmée."""
+
+    def completer_json(self, consigne, contexte):
+        raise ErreurFournisseur(
+            "404 Not Found — The model `kimi-k3` does not exist", code=404,
+            corps="The model `kimi-k3` does not exist",
+        )
+
+
+class TestDetectionDuFournisseur(unittest.TestCase):
+    """Une clé refusée par OpenAI peut être excellente ailleurs."""
+
+    TABLE = {
+        "openai": {"libelle": "OpenAI", "protocole": "openai",
+                   "url": "https://exemple.invalide/v1/chat/completions",
+                   "cle_env": "OPENAI_API_KEY", "modele_suggere": "gpt-5.6"},
+        "kimi": {"libelle": "Kimi / Moonshot", "protocole": "openai",
+                 "url": "https://exemple.invalide/v1/chat/completions",
+                 "cle_env": "KIMI_API_KEY", "modele_suggere": "kimi-k3"},
+    }
+
+    def test_un_refus_d_authentification_ecarte_le_fournisseur(self):
+        constat = verifier("openai", FournisseurQuiRefuseLaCle())
+        self.assertFalse(accepte(constat))
+
+    def test_un_modele_inconnu_prouve_que_la_cle_est_acceptee(self):
+        """Le serveur n'aurait pas examiné le modèle s'il refusait la clé."""
+        constat = verifier("kimi", FournisseurQuiIgnoreLeModele())
+        self.assertFalse(constat.ok)
+        self.assertTrue(accepte(constat))
+
+    def test_une_reponse_valide_vaut_acceptation(self):
+        constat = Constat("kimi", True, OK, "réponse JSON reçue")
+        self.assertTrue(accepte(constat))
+
+    def test_la_detection_essaie_tous_les_fournisseurs_dans_l_ordre(self):
+        essayes = []
+
+        def faux_verifier(nom, fournisseur):
+            essayes.append(nom)
+            return Constat(nom, False, AUTH, "401")
+
+        import ai.detection as detection
+        vrai = detection.verifier
+        detection.verifier = faux_verifier
+        try:
+            constats = detecter("sk-quelconque", table=self.TABLE)
+        finally:
+            detection.verifier = vrai
+        self.assertEqual(essayes, ["openai", "kimi"])
+        self.assertEqual(len(constats), 2)
+        self.assertFalse(any(accepte(c) for c in constats))
+
+    def test_le_client_construit_porte_la_cle_et_l_url_du_fournisseur(self):
+        client = fournisseur_pour(self.TABLE["kimi"], "sk-essai")
+        self.assertEqual(client.cle_api, "sk-essai")
+        self.assertEqual(client.url, self.TABLE["kimi"]["url"])
+        self.assertEqual(client.modele, "kimi-k3")
+
+    def test_le_protocole_anthropic_donne_un_client_anthropic(self):
+        details = {"libelle": "Anthropic", "protocole": "anthropic",
+                   "url": "https://exemple.invalide/v1/messages",
+                   "cle_env": "ANTHROPIC_API_KEY", "modele_suggere": "claude-sonnet-5"}
+        self.assertIsInstance(fournisseur_pour(details, "sk-essai"), AnthropicProvider)

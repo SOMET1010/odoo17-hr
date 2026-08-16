@@ -19,6 +19,7 @@ import sys
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
+from ai.detection import accepte, detecter, modeles_disponibles  # noqa: E402
 from ai.diagnostic import Constat, VARIABLE, verifier_etapes  # noqa: E402
 from ai.installation import (  # noqa: E402
     FOURNISSEURS, InstallationImpossible, chemin_secrets, ecrire_routeur,
@@ -221,6 +222,72 @@ def commande_setup(args) -> int:
     return code
 
 
+def commande_detecter(args) -> int:
+    """Cherche à quel fournisseur appartient la clé configurée.
+
+    Une clé refusée par OpenAI peut être parfaitement valide ailleurs. Plutôt
+    que de deviner d'après sa forme — « sk-… » ne désigne personne —, on la
+    présente à chaque fournisseur connu.
+    """
+    cle = os.environ.get("BUILDER_IA_CLE") or os.environ.get("OPENAI_API_KEY", "")
+    if not cle:
+        print(f"{ROUGE}Aucune clé dans l'environnement "
+              f"(BUILDER_IA_CLE ou OPENAI_API_KEY).{FIN}")
+        return 2
+
+    print(f"{GRAS}Recherche du fournisseur de la clé {cle[:6]}…{cle[-4:]}{FIN}\n")
+    constats = detecter(cle, journal)
+
+    print()
+    retenus = []
+    for constat in constats:
+        details = FOURNISSEURS[constat.nom]
+        if accepte(constat):
+            retenus.append(constat)
+            etat = f"{VERT}ACCEPTÉE{FIN}"
+        else:
+            etat = f"{ROUGE}refusée{FIN}"
+        print(f"  {etat}  {details['libelle']} — {constat.cause}")
+
+    print()
+    if not retenus:
+        print(f"{ROUGE}Aucun fournisseur connu ne reconnaît cette clé.{FIN}")
+        print("  Elle est probablement révoquée, ou vient d'un service absent")
+        print("  de la table. Dans ce second cas, déclarer directement :")
+        print("    export BUILDER_IA_URL=\"…/v1/chat/completions\"")
+        print("    export BUILDER_IA_MODELE=\"…\"")
+        return 1
+
+    gagnant = retenus[0]
+    details = FOURNISSEURS[gagnant.nom]
+    print(f"{VERT}Cette clé appartient à {details['libelle']}.{FIN}")
+
+    if gagnant.ok:
+        print(f"  Le modèle « {details['modele_suggere']} » répond : rien à changer "
+              f"que le point d'entrée.")
+        modeles = []
+    else:
+        print(f"  La clé passe, mais « {details['modele_suggere']} » est refusé "
+              f"({gagnant.cause}).")
+        modeles = modeles_disponibles(details["url"], cle, details["protocole"])
+        if modeles:
+            print(f"  Modèles déclarés par le service : {', '.join(modeles[:12])}"
+                  + (" …" if len(modeles) > 12 else ""))
+        else:
+            print("  Le service ne publie pas la liste de ses modèles ; le nom")
+            print("  exact est à prendre dans sa documentation.")
+
+    fichier = chemin_secrets()
+    modele = modeles[0] if modeles else details["modele_suggere"]
+    print(f"\n{GRAS}À ajouter à {fichier} :{FIN}")
+    print(f"    export BUILDER_IA_URL=\"{details['url']}\"")
+    print(f"    export BUILDER_IA_MODELE=\"{modele}\"")
+    print("\n  En une commande :")
+    print(f"    printf '%s\\n' 'export BUILDER_IA_URL=\"{details['url']}\"' "
+          f"'export BUILDER_IA_MODELE=\"{modele}\"' >> {fichier}")
+    return 0
+
+
 def commande_providers(args) -> int:
     """Diagnostique chaque fournisseur, sans rien générer.
 
@@ -230,6 +297,9 @@ def commande_providers(args) -> int:
     fonctionne — ce que faisait cette commande, et qui bloquait toute machine
     installée par `deployer/installer.sh`.
     """
+    if getattr(args, "action", "check") == "detect":
+        return commande_detecter(args)
+
     chemin = chemin_configuration()
     constats: list[Constat] = []
     etapes = []
@@ -319,8 +389,9 @@ def principal(argv=None) -> int:
         "providers", help="diagnostique les fournisseurs du routeur"
     )
     fournisseurs.add_argument(
-        "action", nargs="?", default="check", choices=["check"],
-        help="check : vérifie variable, point d'entrée, authentification, modèle",
+        "action", nargs="?", default="check", choices=["check", "detect"],
+        help="check : vérifie variable, point d'entrée, authentification, modèle ; "
+             "detect : cherche à quel fournisseur appartient la clé configurée",
     )
     fournisseurs.set_defaults(fonction=commande_providers)
 
