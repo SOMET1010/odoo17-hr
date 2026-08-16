@@ -70,6 +70,17 @@ docker compose exec -T odoo python3 -c \
 python3 odoo-builder/cli/verifier_cible.py "$SPEC" --cible "$CIBLE" 2>&1 | tee /tmp/mv-verdict.log
 code=${PIPESTATUS[0]}
 
+# Puis la conversion : un module écrit à la mode d'Odoo 12, relu et installé
+# dans l'Odoo de la version visée. C'est la seule preuve qui vaille pour le
+# convertisseur — « la spécification se génère » ne dit rien de ce qu'Odoo en
+# pense, et c'est précisément là que les modules anciens échouent.
+if [[ "$code" -eq 0 ]]; then
+  titre "Conversion d'un module Odoo 12 vers $CIBLE"
+  python3 odoo-builder/cli/verifier_cible.py odoo-builder/exemples/suivi_dossier \
+    --cible "$CIBLE" 2>&1 | tee -a /tmp/mv-verdict.log
+  code=${PIPESTATUS[0]}
+fi
+
 if [[ "$code" -ne 0 ]]; then
   titre "Journaux d'Odoo $CIBLE"
   # Les avertissements de manifeste se comptent par centaines sur une image

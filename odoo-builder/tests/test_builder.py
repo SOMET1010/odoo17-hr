@@ -1863,3 +1863,323 @@ class TestAmorceDuDepotDAddons(unittest.TestCase):
         # Deux ou trois composants : la forme qu'Odoo préfixe de sa série.
         self.assertRegex(version, r"^\d+\.\d+(\.\d+)?$")
         self.assertFalse(manifeste["installable"], "le marqueur n'a rien à installer")
+
+
+# ---------------------------------------------------------------- conversion
+
+from converter.extraction import (  # noqa: E402
+    ConversionImpossible, Extracteur, convertir,
+)
+from converter.rapport import COMPORTEMENT, OBSOLETE, STRUCTURE  # noqa: E402
+
+
+def _ecrire_module(racine, fichiers):
+    """Pose une arborescence de module sur disque, telle que le générateur la rend."""
+    for chemin, contenu in fichiers.items():
+        complet = os.path.join(racine, chemin)
+        os.makedirs(os.path.dirname(complet), exist_ok=True)
+        with open(complet, "w", encoding="utf-8") as f:
+            f.write(contenu)
+    return os.path.join(racine, sorted(fichiers)[0].split("/")[0])
+
+
+class TestAllerRetour(unittest.TestCase):
+    """Générer, relire, regénérer : la conversion doit être l'inverse du rendu.
+
+    C'est le contrôle qui donne sa valeur au convertisseur. Sans lui, on sait
+    seulement qu'il produit « quelque chose » — pas qu'il a compris ce qu'il
+    lisait.
+
+    L'égalité porte sur ce que la spécification sait décrire. Le comportement
+    (méthodes, transitions) n'en fait délibérément pas partie : le
+    convertisseur ne l'infère pas, et le test doit dire la même chose que le
+    convertisseur, pas l'inverse.
+    """
+
+    def _spec_structurelle(self):
+        return ModuleSpec.depuis_dict({
+            "technical_name": "atelier_essai",
+            "name": "Essai d'aller-retour",
+            "summary": "Un module sans comportement, pour éprouver la relecture.",
+            "category": "Tools",
+            "cible": "17.0",
+            "version": "2.3.4",
+            "license": "LGPL-3",
+            "depends": ["base"],
+            "application": True,
+            "models": [{
+                "name": "essai.dossier",
+                "description": "Dossier d'essai",
+                "fields": [
+                    {"name": "name", "type": "char", "string": "Référence",
+                     "required": True},
+                    {"name": "quantite", "type": "integer", "string": "Quantité"},
+                    {"name": "actif", "type": "boolean", "string": "Actif",
+                     "default": True},
+                    {"name": "categorie", "type": "selection", "string": "Catégorie",
+                     "selection": [["a", "Première"], ["b", "Seconde"]]},
+                    {"name": "partenaire_id", "type": "many2one",
+                     "string": "Partenaire", "comodel": "res.partner"},
+                ],
+            }],
+            "views": [
+                {"model": "essai.dossier", "type": "tree", "name": "Dossiers",
+                 "fields": ["name", "quantite", "categorie"]},
+                {"model": "essai.dossier", "type": "form", "name": "Dossier",
+                 "fields": ["name", "quantite", "actif", "categorie", "partenaire_id"]},
+            ],
+            "actions": [{"id": "action_essai_dossier", "name": "Dossiers",
+                         "model": "essai.dossier", "view_modes": ["tree", "form"]}],
+            "menus": [
+                {"id": "menu_essai_racine", "name": "Essais", "sequence": 30},
+                {"id": "menu_essai_dossiers", "name": "Dossiers",
+                 "parent": "menu_essai_racine", "action": "action_essai_dossier"},
+            ],
+            "access": [{"model": "essai.dossier", "group": "base.group_user",
+                        "perms": "rwcd"}],
+        })
+
+    def test_le_module_regenere_est_identique(self):
+        origine = self._spec_structurelle()
+        origine.valider()
+        rendu = OdooModuleGenerator().generate(origine)
+
+        with tempfile.TemporaryDirectory() as dossier:
+            racine = _ecrire_module(dossier, rendu)
+            relue, rapport = convertir(racine, "17.0")
+
+        relue.valider()
+        self.assertEqual(
+            OdooModuleGenerator().generate(relue), rendu,
+            "la relecture n'a pas retrouvé le module d'origine",
+        )
+        self.assertEqual(rapport.comportements_perdus, [],
+                         "un module sans comportement n'a rien à perdre")
+
+    def test_la_relecture_survit_au_changement_de_version(self):
+        """Un module 17 relu et visé en 19 doit donner le module 19.
+
+        C'est la promesse entière du convertisseur, et elle se vérifie sans
+        Odoo : le module 19 obtenu par conversion doit être celui qu'on aurait
+        généré en visant 19 dès le départ.
+        """
+        origine = self._spec_structurelle()
+        rendu17 = OdooModuleGenerator().generate(origine)
+
+        direct = self._spec_structurelle()
+        direct.cible = "19.0"
+        attendu19 = OdooModuleGenerator().generate(direct)
+
+        with tempfile.TemporaryDirectory() as dossier:
+            racine = _ecrire_module(dossier, rendu17)
+            relue, _ = convertir(racine, "19.0")
+        relue.valider()
+
+        self.assertEqual(OdooModuleGenerator().generate(relue), attendu19)
+
+    def test_la_version_fonctionnelle_traverse_la_conversion(self):
+        """« 17.0.2.3.4 » relu et visé en 19 donne « 19.0.2.3.4 ».
+
+        Sans la séparation cible / version, on obtiendrait « 19.0.17.0.2.3.4 »
+        ou une version repartie de zéro — dans les deux cas, l'historique du
+        module serait perdu au premier passage de version.
+        """
+        rendu = OdooModuleGenerator().generate(self._spec_structurelle())
+        with tempfile.TemporaryDirectory() as dossier:
+            racine = _ecrire_module(dossier, rendu)
+            relue, rapport = convertir(racine, "19.0")
+        self.assertEqual(relue.version, "2.3.4")
+        self.assertEqual(rapport.version_origine, "17.0.2.3.4")
+        self.assertIn("'19.0.2.3.4'",
+                      OdooModuleGenerator().generate(relue)["atelier_essai/__manifest__.py"])
+
+
+# Le module d'exemple vit sur DISQUE, dans exemples/suivi_dossier, et la
+# recette multi-versions lit le même dossier. Le recopier ici en donnerait deux
+# versions, et l'une se corrigerait sans l'autre — c'est exactement ce que la
+# règle « importer, jamais recopier » interdit ailleurs dans ce dépôt.
+EXEMPLE_V12 = os.path.join(RACINE, "exemples", "suivi_dossier")
+
+
+def _copier_exemple(vers, remplacements=None):
+    """Recopie le module d'exemple, en substituant éventuellement un fichier."""
+    remplacements = remplacements or {}
+    for dossier, _, noms in os.walk(EXEMPLE_V12):
+        for nom in noms:
+            source = os.path.join(dossier, nom)
+            relatif = os.path.relpath(source, EXEMPLE_V12)
+            cible = os.path.join(vers, relatif)
+            os.makedirs(os.path.dirname(cible), exist_ok=True)
+            with open(source, encoding="utf-8") as f:
+                contenu = f.read()
+            with open(cible, "w", encoding="utf-8") as f:
+                f.write(remplacements.pop(relatif, contenu))
+    for relatif, contenu in remplacements.items():
+        cible = os.path.join(vers, relatif)
+        os.makedirs(os.path.dirname(cible), exist_ok=True)
+        with open(cible, "w", encoding="utf-8") as f:
+            f.write(contenu)
+
+
+class TestConversionV12(unittest.TestCase):
+    """Un module écrit à la mode d'Odoo 12, relu pour Odoo 19."""
+
+    def _convertir(self, cible="19.0", fichiers=None):
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        racine = os.path.join(self._dossier.name, "suivi_dossier")
+        _copier_exemple(racine, dict(fichiers or {}))
+        return convertir(racine, cible)
+
+    def _quoi(self, rapport):
+        return " | ".join(m.quoi for m in rapport.manques)
+
+    # ------------------------------------------------------ ce qui est repris
+
+    def test_le_module_converti_est_valide_et_se_genere(self):
+        spec, _ = self._convertir()
+        spec.valider()
+        fichiers = OdooModuleGenerator().generate(spec)
+        self.assertTrue(OdooStaticValidator().check(fichiers, spec).ok)
+
+    def test_le_premier_positionnel_n_est_pas_lu_comme_un_comodele(self):
+        """« fields.Many2one('res.partner', 'Client') » : deux sens différents.
+
+        Lire le second argument comme un comodèle donnerait un modèle nommé
+        « Client », et l'installation échouerait sur un modèle introuvable —
+        loin d'ici, et sans rapport apparent avec la conversion.
+        """
+        spec, _ = self._convertir()
+        modele = spec.models[0]
+        client = next(c for c in modele.fields if c.name == "client_id")
+        self.assertEqual(client.comodel, "res.partner")
+        self.assertEqual(client.string, "Client")
+        nom = next(c for c in modele.fields if c.name == "name")
+        self.assertEqual(nom.string, "Référence")
+
+    def test_la_version_perd_la_serie_et_garde_la_sienne(self):
+        spec, rapport = self._convertir()
+        self.assertEqual(rapport.version_origine, "12.0.1.3.0")
+        self.assertEqual(spec.version, "1.3.0")
+        self.assertIn(
+            "'19.0.1.3.0'",
+            OdooModuleGenerator().generate(spec)["suivi_dossier/__manifest__.py"],
+        )
+
+    def test_la_vue_liste_de_v12_devient_une_liste_de_19(self):
+        """« tree » chez l'un, « list » chez l'autre : le dialecte tranche."""
+        spec, _ = self._convertir("19.0")
+        rendu = OdooModuleGenerator().generate(spec)
+        vues = rendu["suivi_dossier/views/suivi_dossier_views.xml"]
+        self.assertIn("<list>", vues)
+        self.assertNotIn("<tree>", vues)
+
+    # -------------------------------------------------- ce qui est signalé
+
+    def test_un_champ_calcule_est_abandonne_et_non_degrade(self):
+        """Le pire résultat possible serait de le garder.
+
+        Conservé sans son calcul, « total » serait une colonne toujours vide
+        qu'un écran afficherait comme une valeur juste. Le module s'installe,
+        se comporte mal, et rien ne le dit.
+        """
+        spec, rapport = self._convertir()
+        noms = {c.name for c in spec.models[0].fields}
+        self.assertNotIn("total", noms)
+        self.assertIn("champ « total » (compute=…)", self._quoi(rapport))
+        # ...et la vue qui le citait ne le cite plus.
+        liste = next(v for v in spec.views if v.type == "tree")
+        self.assertNotIn("total", liste.fields)
+
+    def test_un_defaut_illisible_ne_fait_pas_perdre_le_champ(self):
+        """Un défaut en Python ne fausse rien : le champ démarre vide, c'est tout."""
+        spec, rapport = self._convertir()
+        noms = {c.name for c in spec.models[0].fields}
+        self.assertIn("etiquette", noms)
+        manque = next(m for m in rapport.manques if "etiquette" in m.quoi)
+        self.assertEqual(manque.genre, STRUCTURE)
+
+    def test_les_methodes_sont_nommees_une_par_une(self):
+        spec, rapport = self._convertir()
+        quoi = self._quoi(rapport)
+        self.assertIn("action_valider", quoi)
+        self.assertIn("_compute_total", quoi)
+        transition = next(m for m in rapport.manques if "action_valider" in m.quoi)
+        self.assertEqual(transition.genre, COMPORTEMENT)
+        # On dit ce que la méthode écrit, sans prétendre l'avoir portée.
+        self.assertIn("state", transition.conduite)
+        self.assertIn("valide", transition.conduite)
+        self.assertIsNone(spec.models[0].lifecycle,
+                          "le convertisseur ne doit jamais inventer un cycle de vie")
+
+    def test_les_tournures_perimees_sont_signalees(self):
+        _, rapport = self._convertir()
+        perimees = {m.quoi for m in rapport.manques if m.genre == OBSOLETE}
+        joint = " | ".join(perimees)
+        for attendu in ("__openerp__.py", "openerp", "<openerp>",
+                        "@api.multi", "attrs", "view_type"):
+            self.assertIn(attendu, joint, f"« {attendu} » n'a pas été signalé")
+
+    def test_un_champ_de_vue_inexistant_est_retire(self):
+        """Odoo refuse une vue citant un champ absent : on coupe près de la cause."""
+        spec, rapport = self._convertir()
+        liste = next(v for v in spec.views if v.type == "tree")
+        self.assertNotIn("inexistant", liste.fields)
+        self.assertIn("inexistant", self._quoi(rapport))
+
+    def test_les_contraintes_sql_sont_signalees_comme_comportement(self):
+        _, rapport = self._convertir()
+        manque = next(m for m in rapport.manques if "_sql_constraints" in m.quoi)
+        self.assertEqual(manque.genre, COMPORTEMENT)
+
+    def test_un_bouton_sans_sa_methode_est_signale(self):
+        _, rapport = self._convertir()
+        self.assertIn("bouton « action_valider »", self._quoi(rapport))
+
+    # ------------------------------------------------------------- refus nets
+
+    def test_un_dossier_sans_manifeste_est_refuse(self):
+        with tempfile.TemporaryDirectory() as dossier:
+            with self.assertRaises(ConversionImpossible):
+                convertir(dossier, "19.0")
+
+    def test_le_code_lu_n_est_jamais_execute(self):
+        """Convertir un module ne doit pas être une façon de l'exécuter.
+
+        Un module converti vient d'ailleurs — d'un client, du dépôt d'Odoo.
+        Si la lecture l'importait, il suffirait de faire convertir un module
+        pour faire tourner ce qu'il contient.
+        """
+        with open(os.path.join(EXEMPLE_V12, "models", "dossier.py"),
+                  encoding="utf-8") as f:
+            original = f.read()
+        piege = {"models/dossier.py":
+                 "import os\nos.environ['ATELIER_CODE_EXECUTE'] = 'oui'\n" + original}
+        os.environ.pop("ATELIER_CODE_EXECUTE", None)
+        self._convertir(fichiers=piege)
+        self.assertNotIn("ATELIER_CODE_EXECUTE", os.environ)
+
+    def test_les_droits_inventes_sont_annonces_comme_tels(self):
+        """C'est la seule chose qui rende le converti plus ouvert que l'original.
+
+        Le module d'origine ne déclare aucun droit : chez lui, seul le
+        super-utilisateur voit le modèle. Le converti l'ouvre aux utilisateurs
+        internes. Une décision de sécurité prise par un outil doit être
+        écrite en toutes lettres, jamais déduite du silence.
+        """
+        spec, rapport = self._convertir()
+        self.assertEqual([a.model for a in spec.access], ["suivi.dossier"])
+        manque = next(m for m in rapport.manques if "droits inventés" in m.quoi)
+        self.assertEqual(manque.genre, COMPORTEMENT)
+        self.assertIn("PLUS permissif", manque.pourquoi)
+        self.assertIn("restreindre", manque.conduite)
+
+    def test_des_droits_existants_ne_sont_pas_remplaces(self):
+        avec_droits = {"security/ir.model.access.csv": (
+            "id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\n"
+            "acc_dossier,acc.dossier,model_suivi_dossier,base.group_system,1,0,0,0\n"
+        )}
+        spec, rapport = self._convertir(fichiers=avec_droits)
+        self.assertEqual(spec.access[0].group, "base.group_system")
+        self.assertEqual(spec.access[0].perms, "r")
+        self.assertNotIn("droits inventés", self._quoi(rapport))
