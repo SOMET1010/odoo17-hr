@@ -1801,3 +1801,65 @@ class TestCibleDansLaSpecification(unittest.TestCase):
 
     def test_le_defaut_reste_17_pour_ne_rien_casser(self):
         self.assertEqual(ModuleSpec.depuis_dict(json.loads(json.dumps(MINIMAL))).cible, "17.0")
+
+
+class TestAmorceDuDepotDAddons(unittest.TestCase):
+    """Le dossier de dépôt ne doit jamais être vide au démarrage d'Odoo.
+
+    Odoo 19 filtre « addons_path » au démarrage et écarte tout dossier ne
+    contenant aucun module (odoo/tools/config.py, _is_addons_path). Le dépôt
+    de l'Atelier étant vide sur une instance neuve, il en disparaissait — et
+    le premier module déposé restait introuvable, « update_list » répondant
+    200 sans rien voir. Aucune trace, aucune erreur : le pire des symptômes.
+
+    Ces contrôles tiennent la parade. Elle est invisible à l'exécution : rien
+    d'autre ne signalerait qu'on l'a cassée.
+    """
+
+    AMORCE = os.path.join(os.path.dirname(RACINE), ".docker", "depot-amorce")
+
+    @staticmethod
+    def _est_un_chemin_d_addons(chemin):
+        """Copie fidèle de _is_addons_path d'Odoo 19."""
+        for f in os.listdir(chemin):
+            modpath = os.path.join(chemin, f)
+
+            def a_le_fichier(nom):
+                return os.path.isfile(os.path.join(modpath, nom))
+
+            if a_le_fichier("__init__.py") and a_le_fichier("__manifest__.py"):
+                return True
+        return False
+
+    def test_odoo_19_reconnaitrait_le_dossier_d_amorce(self):
+        self.assertTrue(os.path.isdir(self.AMORCE), "dossier d'amorce absent")
+        self.assertTrue(
+            self._est_un_chemin_d_addons(self.AMORCE),
+            "Odoo 19 écarterait ce dossier de son chemin d'addons.",
+        )
+
+    def test_la_version_du_marqueur_convient_a_toutes_les_series(self):
+        """Une version préfixée ferait du marqueur un module d'une seule série.
+
+        Odoo 18 refuse un manifeste dont la version porte une autre série que
+        la sienne — et ce refus empêche l'initialisation de la base, pas
+        seulement l'installation du module. Le marqueur étant sur le chemin
+        d'addons de TOUTES les versions, sa version doit rester sans préfixe :
+        Odoo y ajoute alors la sienne, quelle qu'elle soit.
+        """
+        import ast
+
+        chemin = os.path.join(self.AMORCE, "atelier_depot", "__manifest__.py")
+        with open(chemin, encoding="utf-8") as f:
+            texte = f.read()
+        manifeste = ast.literal_eval(texte[texte.index("{"):])
+
+        version = manifeste["version"]
+        for cible in CIBLES:
+            self.assertFalse(
+                version.startswith(cible.split(".")[0]),
+                f"« {version} » attacherait le marqueur à une seule série d'Odoo.",
+            )
+        # Deux ou trois composants : la forme qu'Odoo préfixe de sa série.
+        self.assertRegex(version, r"^\d+\.\d+(\.\d+)?$")
+        self.assertFalse(manifeste["installable"], "le marqueur n'a rien à installer")

@@ -76,5 +76,19 @@ class Dialecte:
         Odoo attend que la version d'un module commence par celle d'Odoo. Ce
         n'est pas décoratif : c'est ce qui lui permet de savoir qu'un module
         installé en 17.0 doit être mis à jour au passage en 18.0.
+
+        ÉPROUVÉ. Cette règle n'est plus une supposition : la recette
+        multi-versions a fait tomber Odoo 18 dessus. Un module du dépôt
+        déclarant « 17.0.1.0.0 » sur le chemin d'addons d'un Odoo 18 donne
+
+            ValueError: Module ansut_rh: invalid manifest
+              ← Invalid version '17.0.1.0.0'. Modules should have a version
+                in format `x.y`, `x.y.z`, `18.0.x.y` ou `18.0.x.y.z`.
+
+        et l'échec n'est PAS l'installation du module : c'est l'initialisation
+        de la base. Odoo lit tous les manifestes du chemin d'addons avant de
+        créer quoi que ce soit ; un seul module d'une autre série l'empêche de
+        démarrer. C'est la première chose que rencontrera le convertisseur de
+        versions, et elle n'a rien de graduel.
         """
         return f"{self.cible}.{version_fonctionnelle}"

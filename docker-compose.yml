@@ -22,6 +22,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # Amorçage du dépôt d'addons. Tâche unique : elle s'exécute, puis s'arrête.
+  #
+  # Odoo 19 filtre « addons_path » AU DÉMARRAGE et écarte tout dossier ne
+  # contenant encore aucun module. Le dépôt de l'Atelier étant vide sur une
+  # instance neuve, il en disparaîtrait — et tout module déposé ensuite serait
+  # invisible, sans message d'erreur. Ce service y pose un module marqueur
+  # avant qu'Odoo ne démarre. Voir .docker/depot-amorce/.
+  #
+  # Elle n'est SOUS AUCUN PROFIL : elle doit tourner dans tous les cas, sinon
+  # la protection ne tient que là où l'on y a pensé.
+  depot-amorce:
+    image: busybox:1.37
+    command: ["sh", "-c", "cp -r /amorce/. /depot/ && ls /depot"]
+    volumes:
+      - ./.docker/depot-amorce:/amorce:ro
+      - addons-installes:/depot
+
   odoo:
     # La version est un paramètre : la recette multi-versions monte la même
     # pile sur 17, 18 puis 19, et c'est l'Odoo réel qui dit ce qui passe.
@@ -29,6 +46,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Le dépôt doit être amorcé AVANT le démarrage : Odoo ne relit pas son
+      # chemin d'addons ensuite.
+      depot-amorce:
+        condition: service_completed_successfully
     # Derrière la passerelle, Odoo doit savoir qu'il l'est : sans « proxy-mode »
     # il fabrique ses URL en http:// et prend l'adresse du proxy pour celle du
     # visiteur. L'option n'est PAS mise par défaut : activée sur une instance
@@ -62,7 +83,12 @@ services:
       # soumettrait à son historique et empêcherait le service d'installation
       # d'en déposer une version corrigée — il refuse d'écraser une source Git.
       - ${ADDONS_MAISON:-./.docker/maison-absente}:/mnt/maison:ro
-      - ./.docker/odoo.conf:/etc/odoo/odoo.conf:ro
+      # La configuration est un paramètre. La recette multi-versions en monte
+      # une autre : elle éprouve des modules générés pour Odoo 18 ou 19, et le
+      # dépôt est une base de code Odoo 17. Un module d'une autre série sur le
+      # chemin d'addons empêche Odoo 18 d'initialiser une base — pas seulement
+      # d'installer le module : de démarrer.
+      - ${ODOO_CONF:-./.docker/odoo.conf}:/etc/odoo/odoo.conf:ro
     restart: unless-stopped
 
   # Service privé d'installation de modules. Sous profil : « docker compose
