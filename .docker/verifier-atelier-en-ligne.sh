@@ -140,9 +140,14 @@ titre "Étape 4 — L'interface n'est joignable que par la passerelle"
 
 # Le port 8100 ne doit être publié nulle part : la passerelle est le seul
 # chemin, et il est chiffré.
-"${PILE[@]}" ps --format '{{.Ports}}' 2>/dev/null | grep -q '8100'
-[[ $? -ne 0 ]]
-controle $? "Aucun port 8100 n'est publié sur l'hôte."
+#
+# « compose port » et non « compose ps » : la colonne Ports affiche aussi les
+# ports EXPOSÉS — ceux du Dockerfile, joignables des seuls conteneurs voisins.
+# Y chercher « 8100 » ferait échouer une configuration parfaitement close.
+# « port » ne rend une adresse que s'il existe une PUBLICATION vers l'hôte.
+publie=$("${PILE[@]}" port atelier-web 8100 2>/dev/null)
+[[ -z "$publie" ]]
+controle $? "Aucun port 8100 n'est publié sur l'hôte." "publié sur : $publie"
 
 curl -sS -o /dev/null --max-time 3 http://127.0.0.1:8100/sante >/dev/null 2>&1
 [[ $? -ne 0 ]]
