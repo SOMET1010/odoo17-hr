@@ -79,9 +79,17 @@ jobs:
         if: always()
         run: |
           echo "===== odoo ====="
-          docker compose logs --tail=200 odoo || true
+          docker compose logs --tail=120 odoo || true
           echo "===== installateur ====="
-          docker compose logs --tail=100 installateur || true
+          docker compose logs --tail=30 installateur || true
+
+      # Le verdict, seul et en dernier. Sans cela il est enseveli sous les
+      # journaux des conteneurs, et le relire coûte de parcourir tout le fichier.
+      - name: Rappeler le verdict
+        if: always()
+        run: |
+          echo "===== compte rendu d'acceptation ====="
+          cat /tmp/acceptation.log 2>/dev/null || echo "(le test n'a pas produit de compte rendu)"
 
       - name: Conserver le compte rendu
         if: always()

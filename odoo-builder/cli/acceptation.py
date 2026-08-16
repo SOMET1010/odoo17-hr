@@ -190,10 +190,7 @@ def _modele_avec_cycle(spec):
 
 def _eprouver(runtime: OdooRuntime, spec, modele) -> bool:
     """Crée un enregistrement, vérifie le calcul, joue la première transition."""
-    obligatoires = {
-        c.name: _valeur_exemple(c) for c in modele.fields
-        if c.required and not c.est_calcule
-    }
+    obligatoires = _valeurs_obligatoires(runtime, spec, modele)
     identifiant = runtime.creer(modele.name, obligatoires)
     controle(bool(identifiant), f"Création d'un {modele.name} (id={identifiant}).")
 
@@ -207,10 +204,9 @@ def _eprouver(runtime: OdooRuntime, spec, modele) -> bool:
         )
         if relation:
             enfant = next(m for m in spec.models if m.name == relation.comodel)
-            valeurs = {
-                c.name: _valeur_exemple(c) for c in enfant.fields
-                if c.required and not c.est_calcule and c.name != relation.inverse_name
-            }
+            valeurs = _valeurs_obligatoires(
+                runtime, spec, enfant, exclure=(relation.inverse_name,)
+            )
             valeurs[relation.inverse_name] = identifiant
             montant = next(
                 (c for c in enfant.fields if c.type in ("monetary", "float", "integer")), None
@@ -240,12 +236,76 @@ def _eprouver(runtime: OdooRuntime, spec, modele) -> bool:
     )
 
 
-def _valeur_exemple(champ):
-    return {
-        "char": "Recette d'acceptation", "text": "Recette", "html": "<p>Recette</p>",
-        "integer": 1, "float": 1.0, "monetary": 0.0, "boolean": True,
-        "date": "2026-01-10", "datetime": "2026-01-10 08:00:00",
-    }.get(champ.type, "Recette d'acceptation")
+SANS_VALEUR = object()
+
+VALEURS_SIMPLES = {
+    "char": "Recette d'acceptation", "text": "Recette", "html": "<p>Recette</p>",
+    "integer": 1, "float": 1.0, "monetary": 0.0, "boolean": True,
+    "date": "2026-01-10", "datetime": "2026-01-10 08:00:00",
+}
+
+
+def _valeurs_obligatoires(runtime, spec, modele, exclure=()) -> dict:
+    """De quoi créer un enregistrement de ce modèle, champ par champ.
+
+    Le banc d'essai remplissait tout champ de type inconnu avec une chaîne.
+    Un many2one attend un entier : PostgreSQL rejetait l'insertion sur
+    « invalid input syntax for type integer », et l'acceptation accusait le
+    module alors que la faute était ici. Chaque type a maintenant sa valeur, et
+    un champ qu'on ne sait pas remplir est omis plutôt que mal rempli.
+    """
+    valeurs = {}
+    for champ in modele.fields:
+        if champ.required and not champ.est_calcule and champ.name not in exclure:
+            valeur = _valeur_exemple(champ, runtime, spec)
+            if valeur is not SANS_VALEUR:
+                valeurs[champ.name] = valeur
+    return valeurs
+
+
+def _valeur_exemple(champ, runtime=None, spec=None, vus=()):
+    if champ.type in VALEURS_SIMPLES:
+        return VALEURS_SIMPLES[champ.type]
+    if champ.type == "selection":
+        return champ.selection[0][0] if champ.selection else SANS_VALEUR
+    if champ.type == "many2one":
+        return _un_enregistrement(runtime, spec, champ.comodel, vus)
+    if champ.type in ("one2many", "many2many"):
+        return []
+    return SANS_VALEUR
+
+
+def _un_enregistrement(runtime, spec, comodel: str, vus=()):
+    """L'identifiant d'un enregistrement de ce modèle, existant ou créé.
+
+    On cherche d'abord : « res.currency » ou « hr.employee » ont déjà des
+    enregistrements dans une base installée, et en créer un nouveau serait
+    inutile. Sinon, et seulement si le module déclare ce modèle, on en crée un.
+    """
+    if runtime is None or comodel in vus:
+        return SANS_VALEUR
+
+    try:
+        trouves = runtime.appeler(comodel, "search", [[]], {"limit": 1})
+    except Exception:
+        trouves = None
+    if trouves:
+        return trouves[0]
+
+    modele = next((m for m in (spec.models if spec else []) if m.name == comodel), None)
+    if modele is None:
+        return SANS_VALEUR
+
+    valeurs = {}
+    for champ in modele.fields:
+        if champ.required and not champ.est_calcule:
+            valeur = _valeur_exemple(champ, runtime, spec, vus=(*vus, comodel))
+            if valeur is not SANS_VALEUR:
+                valeurs[champ.name] = valeur
+    try:
+        return runtime.creer(comodel, valeurs)
+    except Exception:
+        return SANS_VALEUR
 
 
 def consigner(fournisseur, redacteur, spec) -> dict:

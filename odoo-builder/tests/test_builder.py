@@ -23,7 +23,7 @@ from ai.provider import ScriptedProvider  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import empaqueter  # noqa: E402
 from repair.repair_loop import RepairLoop, _en_dict  # noqa: E402
-from spec.module_spec import ModuleSpec, SpecInvalide  # noqa: E402
+from spec.module_spec import Champ, ModuleSpec, SpecInvalide  # noqa: E402
 from validator.odoo_static_validator import OdooStaticValidator  # noqa: E402
 
 MINIMAL = {
@@ -1510,3 +1510,104 @@ class TestReponseDuFournisseur(unittest.TestCase):
         with self.assertRaises(ErreurFournisseur) as capture:
             f.completer_json("c", "x")
         self.assertIn("quota", str(capture.exception))
+
+
+class RuntimeSimule:
+    """Un Odoo de papier : retient les créations, répond aux recherches."""
+
+    def __init__(self, existants=()):
+        self.existants = set(existants)
+        self.crees = []
+
+    def appeler(self, modele, methode, args, kwargs=None):
+        if methode == "search":
+            return [7] if modele in self.existants else []
+        raise AssertionError(f"appel inattendu : {methode}")
+
+    def creer(self, modele, valeurs):
+        self.crees.append((modele, valeurs))
+        return 100 + len(self.crees)
+
+
+class TestValeursDuBancDEssai(unittest.TestCase):
+    """Un many2one attend un entier, pas « Recette d'acceptation ».
+
+    Le banc d'essai remplissait tout type inconnu avec une chaîne. PostgreSQL
+    rejetait l'insertion sur « invalid input syntax for type integer », et le
+    verdict accusait le module fabriqué alors que la faute était dans le test.
+    """
+
+    def _champ(self, **kw):
+        base = {"name": "x", "type": "char", "string": "X", "selection": []}
+        base.update(kw)
+        return Champ(**base)
+
+    def test_un_many2one_rend_l_identifiant_d_un_existant(self):
+        runtime = RuntimeSimule(existants={"res.currency"})
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="currency_id", type="many2one", comodel="res.currency"),
+            runtime, None,
+        )
+        self.assertEqual(valeur, 7)
+
+    def test_un_many2one_sans_existant_cree_dans_le_module(self):
+        runtime = RuntimeSimule()
+        spec = ModuleSpec.depuis_dict(MINIMAL)
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="objet_id", type="many2one", comodel="mon.objet"),
+            runtime, spec,
+        )
+        self.assertEqual(valeur, 101)
+        self.assertEqual(runtime.crees[0][0], "mon.objet")
+
+    def test_un_many2one_hors_module_et_sans_existant_est_omis(self):
+        """Mieux vaut ne pas remplir un champ que le remplir faux."""
+        runtime = RuntimeSimule()
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="employe_id", type="many2one", comodel="hr.employee"),
+            runtime, ModuleSpec.depuis_dict(MINIMAL),
+        )
+        self.assertIs(valeur, acceptation.SANS_VALEUR)
+
+    def test_une_selection_prend_sa_premiere_valeur(self):
+        champ = self._champ(name="etat", type="selection",
+                            selection=[["brouillon", "Brouillon"], ["fait", "Fait"]])
+        self.assertEqual(acceptation._valeur_exemple(champ), "brouillon")
+
+    def test_les_relations_multiples_partent_vides(self):
+        for type_ in ("one2many", "many2many"):
+            champ = self._champ(name="lignes", type=type_, comodel="mon.objet")
+            self.assertEqual(acceptation._valeur_exemple(champ), [])
+
+    def test_une_boucle_de_relations_ne_tourne_pas_sans_fin(self):
+        """Deux modèles qui se pointent l'un l'autre ne doivent pas boucler."""
+        runtime = RuntimeSimule()
+        spec = ModuleSpec.depuis_dict({
+            **json.loads(json.dumps(MINIMAL)),
+            "models": [{"name": "a.modele", "description": "A", "fields": [
+                {"name": "b_id", "type": "many2one", "string": "B",
+                 "comodel": "b.modele", "required": True}]},
+                {"name": "b.modele", "description": "B", "fields": [
+                    {"name": "a_id", "type": "many2one", "string": "A",
+                     "comodel": "a.modele", "required": True}]}],
+            "views": [], "actions": [], "menus": [],
+            "access": [{"model": "a.modele", "group": "base.group_user"},
+                       {"model": "b.modele", "group": "base.group_user"}],
+        })
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="b_id", type="many2one", comodel="b.modele"),
+            runtime, spec,
+        )
+        # « a.modele » est créé en premier, sans le b_id qu'on renonce à
+        # remplir ; « b.modele » suit, en le pointant. Deux créations, et
+        # pas d'appels sans fin.
+        self.assertEqual([m for m, _ in runtime.crees], ["a.modele", "b.modele"])
+        self.assertEqual(valeur, 102)
+
+    def test_les_champs_calcules_ne_sont_jamais_fournis(self):
+        spec = ModuleSpec.depuis_dict(AVEC_COMPORTEMENT)
+        modele = spec.models[0]
+        valeurs = acceptation._valeurs_obligatoires(
+            RuntimeSimule(existants={"res.currency"}), spec, modele
+        )
+        self.assertNotIn("total", valeurs)
