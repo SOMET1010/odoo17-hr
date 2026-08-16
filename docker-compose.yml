@@ -23,7 +23,9 @@ services:
       retries: 10
 
   odoo:
-    image: odoo:17
+    # La version est un paramètre : la recette multi-versions monte la même
+    # pile sur 17, 18 puis 19, et c'est l'Odoo réel qui dit ce qui passe.
+    image: odoo:${ODOO_TAG:-17}
     depends_on:
       db:
         condition: service_healthy

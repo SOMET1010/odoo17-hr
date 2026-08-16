@@ -1,0 +1,48 @@
+name: Multi-versions — 17, 18, 19
+
+# Le générateur vise trois versions d'Odoo. Ce qu'il en sait tient dans un
+# dialecte de quelques règles, et ces règles sont des hypothèses jusqu'à ce
+# qu'un Odoo réel les accepte ou les refuse.
+#
+# Une version par job : chacune sur son runner, sans rien partager. Trois Odoo
+# sur une même machine feraient porter les échecs par l'isolement plutôt que
+# par les versions.
+#
+# « fail-fast: false » : on veut savoir ce que font les TROIS, pas s'arrêter à
+# la première qui casse. C'est précisément la comparaison qui nous apprend
+# quelque chose.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'odoo-builder/src/generator/**'
+      - 'odoo-builder/src/spec/**'
+      - 'odoo-builder/cli/verifier_cible.py'
+      - '.docker/verifier-multiversions.sh'
+      - '.github/workflows/multiversions.yml'
+
+jobs:
+  cible:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cible: "17.0"
+            tag: "17"
+          - cible: "18.0"
+            tag: "18"
+          - cible: "19.0"
+            tag: "19"
+    name: Odoo ${{ matrix.cible }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Générer, installer, mettre à jour, exécuter
+        env:
+          CIBLE: ${{ matrix.cible }}
+          ODOO_TAG: ${{ matrix.tag }}
+        run: |
+          chmod +x .docker/verifier-multiversions.sh
+          ./.docker/verifier-multiversions.sh
