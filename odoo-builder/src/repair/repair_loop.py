@@ -220,11 +220,52 @@ def _en_dict(spec: ModuleSpec) -> dict:
                             "comodel": c.comodel, "inverse_name": c.inverse_name,
                             "selection": c.selection, "default": c.default,
                             "help": c.help,
+                            # Le comportement doit survivre à l'aller-retour :
+                            # l'oublier ferait disparaître les champs calculés
+                            # à la première réparation, sans rien signaler.
+                            "compute": (
+                                {
+                                    "expression": c.compute.expression,
+                                    "depends": c.compute.depends,
+                                    "store": c.compute.store,
+                                }
+                                if c.compute else None
+                            ),
                         }.items()
                         if v not in (None, False, [], "")
                     }
                     for c in m.fields
                 ],
+                **({"constraints": [
+                    {
+                        "name": k.name, "condition": k.condition,
+                        "message": k.message, "depends": k.depends,
+                    }
+                    for k in m.constraints
+                ]} if m.constraints else {}),
+                **({"lifecycle": {
+                    "field_name": m.lifecycle.field_name,
+                    "states": [
+                        {
+                            k: v for k, v in {
+                                "value": e.value, "label": e.label,
+                                "is_initial": e.is_initial, "is_final": e.is_final,
+                            }.items() if v not in (False,)
+                        }
+                        for e in m.lifecycle.states
+                    ],
+                    "transitions": [
+                        {
+                            k: v for k, v in {
+                                "name": t.name, "label": t.label,
+                                "from_states": t.from_states, "to_state": t.to_state,
+                                "allowed_groups": t.allowed_groups,
+                                "validations": t.validations,
+                            }.items() if v not in ([],)
+                        }
+                        for t in m.lifecycle.transitions
+                    ],
+                }} if m.lifecycle else {}),
             }
             for m in spec.models
         ],

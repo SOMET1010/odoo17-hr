@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape, quoteattr
 
+from spec.expression import Expression
 from spec.module_spec import Modele, ModuleSpec, Vue
 
 ENTETE = "# -*- coding: utf-8 -*-\n"
@@ -33,7 +34,10 @@ class OdooModuleGenerator:
 
         # Une extension qui n'ajoute aucun champ n'a rien à déclarer : générer
         # une classe vide produirait du code mort et un import inutilisé.
-        modeles_ecrits = [m for m in spec.models if m.fields or not m.est_extension]
+        modeles_ecrits = [
+            m for m in spec.models
+            if m.tous_les_champs or m.constraints or not m.est_extension
+        ]
         if modeles_ecrits:
             fichiers[f"{racine}/__init__.py"] = "from . import models\n"
             fichiers[f"{racine}/models/__init__.py"] = "".join(
@@ -99,8 +103,19 @@ class OdooModuleGenerator:
     # ---------------------------------------------------------------- modèles
 
     def _modele(self, modele: Modele) -> str:
-        importe = "fields, models" if modele.fields else "models"
-        lignes = [ENTETE, f"\nfrom odoo import {importe}\n\n\n"]
+        champs = modele.tous_les_champs
+        calcules = [c for c in modele.fields if c.est_calcule]
+        cycle = modele.lifecycle
+
+        besoins = ["models"]
+        if champs:
+            besoins.insert(0, "fields")
+        if calcules or modele.constraints:
+            besoins.insert(0, "api")
+        lignes = [ENTETE, f"\nfrom odoo import {', '.join(besoins)}\n"]
+        if modele.constraints or (cycle and cycle.transitions):
+            lignes.append("from odoo.exceptions import UserError, ValidationError\n")
+        lignes.append("\n\n")
         lignes.append(f"class {modele.nom_classe}(models.Model):\n")
         if modele.est_extension:
             lignes.append(f"    _inherit = {_litteral(modele.inherit)}\n")
@@ -113,12 +128,81 @@ class OdooModuleGenerator:
                 lignes.append(f"    _rec_name = {_litteral(modele.rec_name)}\n")
         lignes.append("\n")
 
-        if not modele.fields:
+        if not champs:
             lignes.append("    pass\n")
             return "".join(lignes)
 
-        for champ in modele.fields:
+        for champ in champs:
             lignes.append(f"    {champ.name} = {self._definition_champ(champ)}\n")
+
+        for champ in calcules:
+            lignes.append(self._methode_calcul(champ))
+        for contrainte in modele.constraints:
+            lignes.append(self._methode_contrainte(contrainte))
+        if cycle:
+            for transition in cycle.transitions:
+                lignes.append(self._methode_transition(cycle, transition))
+
+        return "".join(lignes)
+
+    # ------------------------------------------------------------ comportement
+
+    def _methode_calcul(self, champ) -> str:
+        """@api.depends + boucle sur self, comme l'exige Odoo."""
+        expression = champ.compute.compiler("enreg").en_python()
+        depends = ", ".join(_litteral(d) for d in sorted(champ.compute.depends))
+        return (
+            f"\n    @api.depends({depends})\n"
+            f"    def _compute_{champ.name}(self):\n"
+            f"        for enreg in self:\n"
+            f"            enreg.{champ.name} = {expression}\n"
+        )
+
+    def _methode_contrainte(self, contrainte) -> str:
+        """La condition décrit l'état VALIDE : on lève quand elle est fausse."""
+        expression = contrainte.compiler("enreg").en_python()
+        depends = ", ".join(_litteral(d) for d in sorted(contrainte.depends))
+        return (
+            f"\n    @api.constrains({depends})\n"
+            f"    def _check_{contrainte.name}(self):\n"
+            f"        for enreg in self:\n"
+            f"            if not {expression}:\n"
+            f"                raise ValidationError({_litteral(contrainte.message)})\n"
+        )
+
+    def _methode_transition(self, cycle, transition) -> str:
+        """Une transition devient une méthode : contrôles, puis changement d'état.
+
+        Les contrôles sont générés depuis la spécification — l'état de départ,
+        le groupe autorisé, les validations — jamais fournis en Python.
+        """
+        lignes = [
+            f"\n    def action_{transition.name}(self):\n",
+            f"        \"\"\"{transition.label}\"\"\"\n",
+            "        for enreg in self:\n",
+        ]
+        depart = ", ".join(_litteral(e) for e in transition.from_states)
+        lignes.append(f"            if enreg.{cycle.field_name} not in ({depart},):\n")
+        lignes.append(
+            f"                raise UserError({_litteral(transition.label)} + "
+            f"\" : opération impossible depuis l'état courant.\")\n"
+        )
+        for groupe in transition.allowed_groups:
+            lignes.append(f"            if not self.env.user.has_group({_litteral(groupe)}):\n")
+            lignes.append(
+                f"                raise UserError({_litteral(transition.label)} + "
+                "\" : vous n'avez pas les droits nécessaires.\")\n"
+            )
+        for validation in transition.validations:
+            condition = Expression(validation["condition"], "enreg").en_python()
+            lignes.append(f"            if not {condition}:\n")
+            lignes.append(
+                f"                raise UserError({_litteral(validation['message'])})\n"
+            )
+        lignes.append(
+            f"            enreg.{cycle.field_name} = {_litteral(transition.to_state)}\n"
+        )
+        lignes.append("        return True\n")
         return "".join(lignes)
 
     def _definition_champ(self, champ) -> str:
@@ -142,6 +226,11 @@ class OdooModuleGenerator:
             ) + "]"
             arguments.insert(0, f"selection={valeurs}")
 
+        if champ.est_calcule:
+            # Odoo relie le champ à sa méthode par ce nom ; le stockage décide
+            # si la valeur est persistée ou recalculée à la lecture.
+            arguments.append(f"compute='_compute_{champ.name}'")
+            arguments.append(f"store={_litteral(champ.compute.store)}")
         if champ.required:
             arguments.append("required=True")
         if champ.readonly:
@@ -167,7 +256,8 @@ class OdooModuleGenerator:
             blocs.append(f'        <field name="name">{escape(vue.name)}</field>\n')
             blocs.append(f'        <field name="model">{escape(vue.model)}</field>\n')
             blocs.append('        <field name="arch" type="xml">\n')
-            blocs.append(self._arch(vue))
+            modele_lie = next((m for m in spec.models if m.name == vue.model), None)
+            blocs.append(self._arch(vue, modele_lie))
             blocs.append("        </field>\n    </record>\n\n")
 
         for action in actions:
@@ -188,7 +278,7 @@ class OdooModuleGenerator:
         blocs.append("</odoo>\n")
         return "".join(blocs)
 
-    def _arch(self, vue: Vue) -> str:
+    def _arch(self, vue: Vue, modele=None) -> str:
         marge = " " * 12
         champs = "".join(
             f'{marge}    <field name={quoteattr(nom)}/>\n' for nom in vue.fields
@@ -204,8 +294,28 @@ class OdooModuleGenerator:
         )
 
         if vue.type == "form":
+            # Le cycle de vie se rend de lui-même : une barre d'état, et un
+            # bouton par transition. Rien de tout cela n'est saisi à la main —
+            # c'est la spécification du workflow qui le produit.
+            entete = ""
+            cycle = modele.lifecycle if modele else None
+            if cycle and cycle.states:
+                boutons = "".join(
+                    f'{marge}        <button name={quoteattr("action_" + t.name)} '
+                    f'string={quoteattr(t.label)} type="object" '
+                    f'invisible={quoteattr(f"{cycle.field_name} not in {list(t.from_states)}")} '
+                    f'class="btn-primary"/>\n'
+                    for t in cycle.transitions
+                )
+                etats = ",".join(e.value for e in cycle.states if not e.is_final)
+                entete = (
+                    f"{marge}    <header>\n{boutons}"
+                    f'{marge}        <field name={quoteattr(cycle.field_name)} '
+                    f'widget="statusbar" statusbar_visible={quoteattr(etats)}/>\n'
+                    f"{marge}    </header>\n"
+                )
             return (
-                f"{marge}<form>\n{marge}    <sheet>\n{marge}        <group>\n"
+                f"{marge}<form>\n{entete}{marge}    <sheet>\n{marge}        <group>\n"
                 + champs.replace(marge + "    ", marge + "            ")
                 + f"{marge}        </group>\n{marge}    </sheet>\n{marge}</form>\n"
             )

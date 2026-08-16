@@ -1,0 +1,123 @@
+{
+  "_commentaire": "Cas d'usage de référence du Builder v2 : « gestion des missions avec demande, validation hiérarchique et remboursement ». Ce module porte du COMPORTEMENT — un montant calculé, une contrainte, un cycle de vie — ce que la première version de la spécification ne savait pas décrire.",
+
+  "technical_name": "mission_management",
+  "name": "Gestion des missions",
+  "summary": "Demande de mission, validation hiérarchique et remboursement",
+  "category": "Human Resources",
+  "depends": ["base"],
+  "application": true,
+
+  "models": [
+    {
+      "name": "mission.request",
+      "description": "Demande de mission",
+      "rec_name": "name",
+      "fields": [
+        { "name": "name", "type": "char", "string": "Objet", "required": true },
+        { "name": "destination", "type": "char", "string": "Destination", "required": true },
+        { "name": "date_depart", "type": "date", "string": "Date de départ", "required": true },
+        { "name": "date_retour", "type": "date", "string": "Date de retour", "required": true },
+        { "name": "currency_id", "type": "many2one", "string": "Devise",
+          "comodel": "res.currency" },
+        { "name": "line_ids", "type": "one2many", "string": "Frais",
+          "comodel": "mission.expense", "inverse_name": "request_id" },
+        { "name": "total_amount", "type": "monetary", "string": "Montant total",
+          "readonly": true,
+          "compute": {
+            "expression": "sum(line_ids.amount)",
+            "depends": ["line_ids.amount"],
+            "store": true
+          }
+        },
+        { "name": "nombre_frais", "type": "integer", "string": "Nombre de frais",
+          "readonly": true,
+          "compute": {
+            "expression": "count(line_ids)",
+            "depends": ["line_ids"],
+            "store": false
+          }
+        }
+      ],
+      "constraints": [
+        {
+          "name": "retour_apres_depart",
+          "condition": "date_retour >= date_depart",
+          "message": "La date de retour doit être postérieure à la date de départ.",
+          "depends": ["date_depart", "date_retour"]
+        }
+      ],
+      "lifecycle": {
+        "field_name": "state",
+        "states": [
+          { "value": "draft",     "label": "Brouillon",  "is_initial": true },
+          { "value": "submitted", "label": "Soumise" },
+          { "value": "approved",  "label": "Approuvée" },
+          { "value": "reimbursed","label": "Remboursée", "is_final": true },
+          { "value": "refused",   "label": "Refusée",    "is_final": true }
+        ],
+        "transitions": [
+          {
+            "name": "submit", "label": "Soumettre",
+            "from_states": ["draft"], "to_state": "submitted",
+            "validations": [
+              { "condition": "total_amount > 0",
+                "message": "Une demande sans frais ne peut pas être soumise." }
+            ]
+          },
+          {
+            "name": "approve", "label": "Approuver",
+            "from_states": ["submitted"], "to_state": "approved",
+            "allowed_groups": ["base.group_system"]
+          },
+          {
+            "name": "refuse", "label": "Refuser",
+            "from_states": ["submitted"], "to_state": "refused",
+            "allowed_groups": ["base.group_system"]
+          },
+          {
+            "name": "reimburse", "label": "Rembourser",
+            "from_states": ["approved"], "to_state": "reimbursed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mission.expense",
+      "description": "Frais de mission",
+      "fields": [
+        { "name": "name", "type": "char", "string": "Libellé", "required": true },
+        { "name": "currency_id", "type": "many2one", "string": "Devise",
+          "comodel": "res.currency" },
+        { "name": "amount", "type": "monetary", "string": "Montant", "required": true },
+        { "name": "request_id", "type": "many2one", "string": "Demande",
+          "comodel": "mission.request", "required": true }
+      ]
+    }
+  ],
+
+  "views": [
+    { "model": "mission.request", "type": "tree", "name": "Missions",
+      "fields": ["name", "destination", "date_depart", "total_amount", "state"] },
+    { "model": "mission.request", "type": "form", "name": "Mission",
+      "fields": ["name", "destination", "date_depart", "date_retour", "total_amount", "nombre_frais", "line_ids"] },
+    { "model": "mission.expense", "type": "tree", "name": "Frais",
+      "fields": ["name", "amount", "request_id"] }
+  ],
+
+  "actions": [
+    { "id": "action_mission_request", "name": "Missions", "model": "mission.request",
+      "view_modes": ["tree", "form"], "domain": "[]", "context": "{}" }
+  ],
+
+  "menus": [
+    { "id": "menu_mission_racine", "name": "Missions", "sequence": 30 },
+    { "id": "menu_mission_demandes", "name": "Demandes",
+      "parent": "menu_mission_racine", "action": "action_mission_request", "sequence": 10 }
+  ],
+
+  "access": [
+    { "model": "mission.request", "group": "base.group_user", "perms": "rwcd" },
+    { "model": "mission.expense", "group": "base.group_user", "perms": "rwcd" }
+  ]
+}

@@ -15,6 +15,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from spec.behavior import (
+    Calcul, ComportementInvalide, Contrainte, CycleDeVie, Etat, Transition,
+)
+
 NOM_TECHNIQUE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 NOM_MODELE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
 NOM_CHAMP = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -43,6 +47,12 @@ class Champ:
     selection: list[tuple[str, str]] = field(default_factory=list)
     default: object | None = None
     help: str | None = None
+    # Champ calculé : l'expression et ses dépendances, jamais du Python.
+    compute: Calcul | None = None
+
+    @property
+    def est_calcule(self) -> bool:
+        return self.compute is not None
 
     def valider(self, contexte: str) -> None:
         if not NOM_CHAMP.match(self.name):
@@ -61,6 +71,16 @@ class Champ:
             raise SpecInvalide(
                 f"{contexte} : le champ selection « {self.name} » n'a aucune valeur."
             )
+        if self.compute:
+            if self.required:
+                raise SpecInvalide(
+                    f"{contexte} : « {self.name} » est calculé et obligatoire à la "
+                    "fois. Odoo ne peut pas exiger une valeur qu'il calcule."
+                )
+            try:
+                self.compute.valider(contexte)
+            except ComportementInvalide as erreur:
+                raise SpecInvalide(str(erreur))
 
 
 @dataclass
@@ -70,6 +90,28 @@ class Modele:
     inherit: str | None = None          # renseigné => extension d'un modèle existant
     fields: list[Champ] = field(default_factory=list)
     rec_name: str | None = None
+    constraints: list[Contrainte] = field(default_factory=list)
+    lifecycle: CycleDeVie | None = None
+
+    @property
+    def champ_etat(self) -> Champ | None:
+        """Le champ d'état, dérivé du cycle de vie plutôt que ressaisi."""
+        if not self.lifecycle or not self.lifecycle.states:
+            return None
+        cycle = self.lifecycle
+        initial = cycle.etat_initial
+        return Champ(
+            name=cycle.field_name,
+            type="selection",
+            string="État",
+            selection=[(e.value, e.label) for e in cycle.states],
+            default=initial.value if initial else None,
+        )
+
+    @property
+    def tous_les_champs(self) -> list[Champ]:
+        etat = self.champ_etat
+        return [*self.fields, *( [etat] if etat else [] )]
 
     @property
     def est_extension(self) -> bool:
@@ -91,7 +133,7 @@ class Modele:
                 f"« {self.name} » hérite de « {self.inherit} » : pour étendre un "
                 "modèle, inherit doit valoir le même nom que le modèle."
             )
-        if not self.est_extension and not self.fields:
+        if not self.est_extension and not self.fields and not self.lifecycle:
             raise SpecInvalide(f"Le modèle « {self.name} » ne déclare aucun champ.")
         vus = set()
         for champ in self.fields:
@@ -99,6 +141,43 @@ class Modele:
                 raise SpecInvalide(f"{self.name} : champ « {champ.name} » en double.")
             vus.add(champ.name)
             champ.valider(self.name)
+
+        try:
+            if self.lifecycle:
+                self.lifecycle.valider(self.name)
+                if self.lifecycle.field_name in vus:
+                    raise SpecInvalide(
+                        f"{self.name} : « {self.lifecycle.field_name} » est déclaré "
+                        "comme champ alors que le cycle de vie le produit déjà."
+                    )
+            for contrainte in self.constraints:
+                contrainte.valider(self.name)
+        except ComportementInvalide as erreur:
+            raise SpecInvalide(str(erreur))
+
+        # Un champ monétaire s'appuie sur un champ devise : sans lui, Odoo
+        # refuse de construire le registre — « unknown currency_field » — et
+        # l'installation échoue avant même d'atteindre les vues.
+        connus = {c.name for c in self.tous_les_champs}
+        if not self.est_extension:
+            monetaires = [c.name for c in self.fields if c.type == "monetary"]
+            if monetaires and "currency_id" not in connus:
+                raise SpecInvalide(
+                    f"{self.name} : {sorted(monetaires)} sont monétaires mais le "
+                    "modèle ne déclare pas « currency_id ». Odoo refuserait de "
+                    "charger le modèle."
+                )
+
+        # Une expression ne peut lire qu'un champ que le modèle possède.
+        for champ in self.fields:
+            if not champ.compute:
+                continue
+            for racine in champ.compute.compiler().racines():
+                if racine not in connus:
+                    raise SpecInvalide(
+                        f"{self.name} : le calcul de « {champ.name} » lit "
+                        f"« {racine} », qui n'est pas un champ du modèle."
+                    )
 
 
 @dataclass
@@ -184,7 +263,24 @@ class ModuleSpec:
             raise SpecInvalide("La spécification doit être un objet JSON.")
 
         def champs(liste):
-            return [Champ(**c) for c in liste or []]
+            resultat = []
+            for brut in liste or []:
+                brut = dict(brut)
+                calcul = brut.pop("compute", None)
+                champ = Champ(**brut)
+                if calcul:
+                    champ.compute = Calcul(**calcul)
+                resultat.append(champ)
+            return resultat
+
+        def cycle(brut):
+            if not brut:
+                return None
+            return CycleDeVie(
+                field_name=brut.get("field_name", "state"),
+                states=[Etat(**e) for e in brut.get("states", [])],
+                transitions=[Transition(**t) for t in brut.get("transitions", [])],
+            )
 
         try:
             spec = ModuleSpec(
@@ -204,6 +300,8 @@ class ModuleSpec:
                         inherit=m.get("inherit"),
                         rec_name=m.get("rec_name"),
                         fields=champs(m.get("fields")),
+                        constraints=[Contrainte(**c) for c in m.get("constraints", [])],
+                        lifecycle=cycle(m.get("lifecycle")),
                     )
                     for m in donnee.get("models", [])
                 ],

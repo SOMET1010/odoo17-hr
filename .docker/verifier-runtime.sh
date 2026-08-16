@@ -473,45 +473,10 @@ titre "Étape 9 — Odoo Builder : spécification → module → installation r�
 # La chaîne complète du Builder, jouée contre le service déjà démarré à
 # l'étape 8. C'est le seul contrôle qui prouve qu'une spécification devient un
 # module réellement installé, et pas seulement un dossier bien formé.
-SPEC=odoo-builder/specs/recette_builder.json
-python3 - "$SPEC" <<'PY'
-import json, os, sys
-os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
-spec = {
-    "technical_name": "recette_builder",
-    "name": "Recette du Builder",
-    "summary": "Module fabriqué par le Odoo Builder pendant la recette",
-    "category": "Tools",
-    "depends": ["base"],
-    "models": [{
-        "name": "recette.builder.note",
-        "description": "Note de recette",
-        "fields": [
-            {"name": "name", "type": "char", "string": "Titre", "required": True},
-            {"name": "contenu", "type": "text", "string": "Contenu"},
-            {"name": "etat", "type": "selection", "string": "État",
-             "selection": [["brouillon", "Brouillon"], ["valide", "Validé"]],
-             "default": "brouillon"},
-        ],
-    }],
-    "views": [
-        {"model": "recette.builder.note", "type": "tree", "name": "Notes",
-         "fields": ["name", "etat"]},
-        {"model": "recette.builder.note", "type": "form", "name": "Note",
-         "fields": ["name", "contenu", "etat"]},
-    ],
-    "actions": [{"id": "action_recette_note", "name": "Notes",
-                 "model": "recette.builder.note"}],
-    "menus": [
-        {"id": "menu_recette_racine", "name": "Recette Builder"},
-        {"id": "menu_recette_note", "name": "Notes",
-         "parent": "menu_recette_racine", "action": "action_recette_note"},
-    ],
-    "access": [{"model": "recette.builder.note", "group": "base.group_user",
-                "perms": "rwcd"}],
-}
-json.dump(spec, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-PY
+# On installe le module de référence qui porte du COMPORTEMENT — champ
+# calculé, contrainte, cycle de vie — et non un module purement structurel :
+# c'est le comportement qu'Odoo peut refuser à l'installation.
+SPEC=odoo-builder/specs/mission.json
 
 if INSTALLATEUR_CLE_API="$CLE_RECETTE" python3 odoo-builder/cli/atelier_odoo.py build "$SPEC" \
      --service "$INSTALLATEUR_URL" >"$TRAVAIL/builder.log" 2>&1; then
@@ -523,19 +488,53 @@ fi
 
 # Le juge de paix reste Odoo, pas la sortie de la commande.
 etat_builder=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \
-  "select state from ir_module_module where name='recette_builder'" 2>/dev/null | tr -d '[:space:]')
+  "select state from ir_module_module where name='mission_management'" 2>/dev/null | tr -d '[:space:]')
 [[ "$etat_builder" == "installed" ]] \
-  && succes "Odoo confirme « recette_builder » installé." \
-  || echec "Dans la base, « recette_builder » est à l'état « ${etat_builder:-absent} »."
+  && succes "Odoo confirme « mission_management » installé." \
+  || echec "Dans la base, « mission_management » est à l'état « ${etat_builder:-absent} »."
 
-# Le modèle déclaré par la spécification doit exister dans le registre.
-modele_cree=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \
-  "select count(*) from ir_model where model='recette.builder.note'" 2>/dev/null | tr -d '[:space:]')
-[[ "${modele_cree:-0}" == "1" ]] \
-  && succes "Le modèle « recette.builder.note » existe dans Odoo." \
-  || echec "Le modèle « recette.builder.note » est absent du registre."
+# Les modèles déclarés par la spécification doivent exister dans le registre.
+modeles_crees=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \
+  "select count(*) from ir_model where model in ('mission.request','mission.expense')" 2>/dev/null | tr -d '[:space:]')
+[[ "${modeles_crees:-0}" == "2" ]] \
+  && succes "Les modèles de la spécification existent dans Odoo." \
+  || echec "Modèles créés : ${modeles_crees:-0}/2."
 
-rm -f "$SPEC"
+# Le champ calculé doit être connu d'Odoo *et* marqué comme stocké : c'est la
+# preuve que le @api.depends généré a été accepté par le registre.
+champ_calcule=$(docker compose exec -T db psql -U odoo -d "$DB" -tAc \
+  "select store from ir_model_fields where model='mission.request' and name='total_amount'" 2>/dev/null | tr -d '[:space:]')
+[[ "$champ_calcule" == "t" ]] \
+  && succes "Le champ calculé « total_amount » est stocké et reconnu par Odoo." \
+  || echec "Le champ calculé « total_amount » n'est pas dans le registre (store=${champ_calcule:-absent})."
+
+# Le comportement, éprouvé à l'exécution : créer une demande, la soumettre,
+# et constater que l'état a changé et que le total s'est calculé tout seul.
+cookies_b="$TRAVAIL/cookies-builder.txt"
+authentifier "$ODOO_URL" "$cookies_b" >/dev/null
+demande=$(appeler "$ODOO_URL" "$cookies_b" mission.request create \
+  '[{"name":"Mission de recette","destination":"Bouaké","date_depart":"2026-01-10","date_retour":"2026-01-12"}]' \
+  | json "donnee['result']")
+if [[ "$demande" =~ ^[0-9]+$ ]]; then
+  succes "Création d'une demande de mission (id=$demande)."
+  appeler "$ODOO_URL" "$cookies_b" mission.expense create \
+    "[{\"name\":\"Hébergement\",\"amount\":125000,\"request_id\":$demande}]" >/dev/null
+
+  total=$(appeler "$ODOO_URL" "$cookies_b" mission.request read "[[$demande],[\"total_amount\"]]" \
+    | json "donnee['result'][0]['total_amount']")
+  [[ "$total" == "125000.0" || "$total" == "125000" ]] \
+    && succes "Le champ calculé vaut $total : le @api.depends généré fonctionne." \
+    || echec "Le champ calculé vaut « ${total:-rien} » au lieu de 125000."
+
+  appeler "$ODOO_URL" "$cookies_b" mission.request action_submit "[[$demande]]" >/dev/null
+  etat_apres=$(appeler "$ODOO_URL" "$cookies_b" mission.request read "[[$demande],[\"state\"]]" \
+    | json "donnee['result'][0]['state']")
+  [[ "$etat_apres" == "submitted" ]] \
+    && succes "La transition « submit » générée fait passer l'état à « submitted »." \
+    || echec "Après submit, l'état vaut « ${etat_apres:-inconnu} » au lieu de « submitted »."
+else
+  echec "Impossible de créer une demande de mission : ${demande:-aucune réponse}."
+fi
 
 # ------------------------------------------------------------------- verdict
 

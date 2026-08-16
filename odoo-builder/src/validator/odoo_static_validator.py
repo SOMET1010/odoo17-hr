@@ -176,8 +176,10 @@ class OdooStaticValidator:
 
     def _vues(self, fichiers, spec: ModuleSpec) -> list[Anomalie]:
         anomalies = []
+        # `tous_les_champs` inclut le champ d'état dérivé du cycle de vie : il
+        # n'est pas saisi dans « fields » mais existe bel et bien sur le modèle.
         champs_par_modele = {
-            m.name: {c.name for c in m.fields} for m in spec.modeles_nouveaux
+            m.name: {c.name for c in m.tous_les_champs} for m in spec.modeles_nouveaux
         }
 
         for chemin, contenu in fichiers.items():
