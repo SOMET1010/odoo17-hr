@@ -35,7 +35,7 @@ from xml.etree import ElementTree
 from converter import apports as catalogue_apports
 from converter.rapport import COMPORTEMENT, OBSOLETE, STRUCTURE, RapportConversion
 from spec.module_spec import (
-    Acces, Action, Champ, Menu, Modele, ModuleSpec, Vue,
+    TYPES_VUES, Acces, Action, Champ, Menu, Modele, ModuleSpec, Vue,
 )
 
 # Les constructeurs de champs que la spécification sait décrire.
@@ -177,6 +177,7 @@ class Extracteur:
 
     def __init__(self, racine: str, cible: str):
         self.racine = os.path.abspath(racine)
+        self.nom_technique = os.path.basename(self.racine)
         self.cible = cible
         self.rapport = RapportConversion()
         self.modeles: dict[str, Modele] = {}
@@ -205,7 +206,7 @@ class Extracteur:
             raise ConversionImpossible(f"« {self.racine} » n'est pas un dossier.")
         manifeste, chemin_manifeste = self._lire_manifeste()
 
-        nom_technique = os.path.basename(self.racine)
+        nom_technique = self.nom_technique
         self.rapport.module = nom_technique
 
         for chemin in self._fichiers(".py"):
@@ -817,6 +818,16 @@ class Extracteur:
         if racine.tag == "tree":
             self.observer("balise_tree", fichier)
         type_vue = "tree" if racine.tag == "list" else racine.tag
+        if type_vue not in TYPES_VUES:
+            # Gantt, cohorte, carte, tableau de bord… Produire la vue quand
+            # même rendait TOUTE la spécification invalide : un seul écran
+            # exotique empêchait la conversion du module entier.
+            self.rapport.noter(
+                STRUCTURE, fichier, 0, f"vue « {identifiant} » de type « {type_vue} »",
+                "ce type de vue n'est pas au vocabulaire de la spécification.",
+                "à refaire dans l'Atelier une fois ce type disponible.",
+            )
+            return
 
         for element in racine.iter():
             for perime in ("attrs", "states"):
@@ -859,11 +870,34 @@ class Extracteur:
                 OBSOLETE, fichier, 0, f"action « {identifiant} » : « view_type »",
                 "ce champ a disparu en Odoo 12.",
             )
-        modes = [
-            "tree" if m.strip() == "list" else m.strip()
-            for m in (self._champ_texte(enregistrement, "view_mode") or "tree,form").split(",")
-            if m.strip()
-        ]
+        modes, ecartes = [], []
+        for brut in (self._champ_texte(enregistrement, "view_mode") or "tree,form").split(","):
+            mode = brut.strip()
+            if not mode:
+                continue
+            mode = "tree" if mode == "list" else mode
+            # Écarter la vue exotique sans écarter le mode qui l'ouvre
+            # laissait une action pointant vers un type que la spécification
+            # ne connaît pas : le module entier redevenait invalide.
+            (modes if mode in TYPES_VUES else ecartes).append(mode)
+        if ecartes:
+            self.rapport.noter(
+                STRUCTURE, fichier, 0, f"action « {identifiant} » : modes {ecartes}",
+                "ces types de vue ne sont pas au vocabulaire de la spécification.",
+            )
+        if not modes:
+            # Retomber sur « tree,form » donnerait un écran que le module n'a
+            # jamais eu : on ouvrirait une liste là où l'auteur avait mis un
+            # planning. Mieux vaut ne pas fournir l'action — le menu qui la
+            # visait part avec elle, et le rapport le dit.
+            self.rapport.noter(
+                STRUCTURE, fichier, 0, f"action « {identifiant} » écartée",
+                "aucun de ses modes de vue n'est au vocabulaire de la "
+                "spécification ; lui en inventer un afficherait un écran que "
+                "le module n'a jamais eu.",
+                "à refaire dans l'Atelier une fois ces types disponibles.",
+            )
+            return
         self.actions.append(Action(
             id=re.sub(r"[^a-z0-9_]", "_", identifiant.lower()),
             name=self._champ_texte(enregistrement, "name") or identifiant,
@@ -1031,7 +1065,11 @@ class Extracteur:
             if modele.est_extension:
                 continue
             connus = {c.name for c in modele.fields}
-            connus.update({"id", "display_name", "create_date", "write_date"})
+            # Odoo fournit « create_date » et consorts, mais le modèle ne les
+            # DÉCLARE pas : les garder dans une vue produisait une
+            # spécification que le validateur refusait — pour une raison
+            # juste, exprimée loin de sa cause.
+            connus.add("id")
             retires = [c for c in vue.fields if c not in connus]
             if retires:
                 vue.fields = [c for c in vue.fields if c in connus]
@@ -1108,16 +1146,50 @@ class Extracteur:
         """
         actions = {a.id for a in self.actions}
         menus = {m.id for m in self.menus}
+
+        # Une action non reprise — type inconnu, modèle écarté, vue exotique —
+        # laisse son menu pointer dans le vide. Odoo refuse le module au
+        # chargement, et son message parle d'une référence externe manquante :
+        # rien n'indique que c'est la conversion qui a retiré la cible.
+        def interne(reference: str) -> str | None:
+            """Le nom local d'une référence, ou None si elle vise un autre module.
+
+            « mails_tracker.action_x » écrit depuis le module « mails_tracker »
+            désigne SA PROPRE action. La traiter comme externe laissait passer
+            un menu dont la cible avait été retirée.
+            """
+            if "." not in reference:
+                return re.sub(r"[^a-z0-9_]", "_", reference.lower())
+            module, _, local = reference.partition(".")
+            if module == self.nom_technique:
+                return re.sub(r"[^a-z0-9_]", "_", local.lower())
+            return None
+
+        gardes = []
+        for menu in self.menus:
+            vise = menu.action
+            if vise and interne(vise) is not None and interne(vise) not in actions:
+                self.rapport.noter(
+                    STRUCTURE, "conversion", 0,
+                    f"menu « {menu.id} » (action « {vise} »)",
+                    "l'action qu'il ouvre n'a pas été reprise ; un menu sans "
+                    "cible fait échouer le chargement du module.",
+                    "le menu part avec elle.",
+                )
+                continue
+            gardes.append(menu)
+        self.menus = gardes
+        menus = {m.id for m in self.menus}
+
         for menu in self.menus:
             for attribut, connus in (("parent", menus), ("action", actions)):
                 valeur = getattr(menu, attribut)
-                if not valeur or "." in valeur:
+                if not valeur:
+                    continue
+                local = interne(valeur)
+                if local is None:
                     continue          # référence à un autre module : intacte
-                normalise = re.sub(r"[^a-z0-9_]", "_", valeur.lower())
-                if normalise in connus:
-                    setattr(menu, attribut, normalise)
-                elif normalise != valeur:
-                    setattr(menu, attribut, normalise)
+                setattr(menu, attribut, local)
 
 
 def convertir(racine: str, cible: str) -> tuple[ModuleSpec, RapportConversion]:

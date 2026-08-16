@@ -2314,3 +2314,162 @@ class TestApportsDeVersion(unittest.TestCase):
                             f"« {regle.marqueur} » sans vérification")
             self.assertIn(regle.depuis, (17, 18, 19))
             self.assertIn(regle.genre, (ACQUIS, A_SAISIR))
+
+
+class TestLireEstPlusLargeQueEcrire(unittest.TestCase):
+    """Nos contrôles étaient plus stricts qu'Odoo, et refusaient du code légal.
+
+    Six modules de production sur dix étaient inconvertibles — non parce
+    qu'Odoo les refuserait, mais parce que la spécification imposait des
+    conventions que la plateforme n'applique pas elle-même. Un outil de
+    conversion qui refuse ce qu'Odoo accepte n'est pas rigoureux : il est
+    inutilisable.
+
+    Desserrer un contrôle est l'opération la plus risquée qui soit. Ces
+    contrôles disent exactement jusqu'où, et pas plus loin.
+    """
+
+    def _minimal(self, **remplacements):
+        base = {
+            "technical_name": "atelier_lecture", "name": "Lecture",
+            "cible": "17.0",
+            "models": [{"name": "essai.chose", "fields": [
+                {"name": "name", "type": "char", "string": "Nom"}]}],
+        }
+        base.update(remplacements)
+        return ModuleSpec.depuis_dict(base)
+
+    def test_un_nom_de_champ_avec_majuscules_est_accepte(self):
+        """Un nom de champ est un attribut Python ; Odoo n'impose rien de plus."""
+        self._minimal(models=[{"name": "essai.chose", "fields": [
+            {"name": "reading_and_validation_of_the_CR", "type": "char",
+             "string": "Lecture et validation du CR"}]}]).valider()
+
+    def test_un_nom_de_champ_reste_un_identifiant(self):
+        """Desserré, pas supprimé : « 2eme-champ » n'est toujours pas un nom."""
+        for mauvais in ("2eme", "champ-tiret", "champ espace", ""):
+            with self.assertRaises(SpecInvalide, msg=mauvais):
+                self._minimal(models=[{"name": "essai.chose", "fields": [
+                    {"name": mauvais, "type": "char", "string": "X"}]}]).valider()
+
+    def test_un_nom_de_modele_sans_point_est_accepte(self):
+        """« _name = 'suivi_diligence' » s'installe très bien en Odoo."""
+        self._minimal(models=[{"name": "suivi_diligence", "fields": [
+            {"name": "name", "type": "char", "string": "Nom"}]}]).valider()
+
+    def test_un_nom_de_modele_reste_contraint(self):
+        for mauvais in ("Suivi.Diligence", "suivi diligence", ".suivi", "1suivi"):
+            with self.assertRaises(SpecInvalide, msg=mauvais):
+                self._minimal(models=[{"name": mauvais, "fields": [
+                    {"name": "name", "type": "char", "string": "N"}]}]).valider()
+
+    def test_un_module_sans_donnees_reste_valide(self):
+        """Une extension purement Python n'a aucun fichier de données.
+
+        Exiger « data » non vide refusait des modules qu'Odoo installe sans
+        broncher — et le refus tombait à la conversion, loin de sa cause.
+        """
+        spec = self._minimal(models=[{"name": "res.partner", "inherit": "res.partner",
+                                      "fields": [{"name": "x_note", "type": "char",
+                                                  "string": "Note"}]}])
+        fichiers = OdooModuleGenerator().generate(spec)
+        rapport = OdooStaticValidator().check(fichiers, spec)
+        self.assertTrue(rapport.ok, rapport.texte())
+
+    def test_un_manifeste_sans_cle_data_reste_refuse(self):
+        """Absente n'est pas vide : Odoo lit « data », il faut que la clé existe."""
+        spec = self._minimal()
+        fichiers = OdooModuleGenerator().generate(spec)
+        chemin = "atelier_lecture/__manifest__.py"
+        fichiers[chemin] = fichiers[chemin].replace("'data':", "'donnees':")
+        rapport = OdooStaticValidator().check(fichiers, spec)
+        self.assertFalse(rapport.ok)
+        self.assertIn("data", rapport.texte())
+
+    def test_le_fournisseur_d_un_modele_consulte_les_dependances(self):
+        """« quick.meetings » vient de « quick_meetings », pas d'un module « quick ».
+
+        La correspondance nom de modèle / nom de module est une convention,
+        pas une règle. La prendre pour une règle faisait accuser une
+        dépendance manquante en citant un module qui n'existe pas.
+        """
+        from validator.odoo_static_validator import module_fournisseur
+        self.assertEqual(module_fournisseur("quick.meetings", {"quick_meetings"}),
+                         "quick_meetings")
+        self.assertEqual(module_fournisseur("hr.employee", {"hr"}), "hr")
+        # Sans dépendance qui corresponde, la convention reprend ses droits.
+        self.assertEqual(module_fournisseur("quick.meetings", set()), "quick")
+
+    def test_une_relation_vraiment_absente_est_toujours_refusee(self):
+        """Desserré, pas aveugle."""
+        spec = self._minimal(depends=["base"], models=[{"name": "essai.chose", "fields": [
+            {"name": "agent_id", "type": "many2one", "string": "Agent",
+             "comodel": "hr.employee"}]}])
+        fichiers = OdooModuleGenerator().generate(spec)
+        rapport = OdooStaticValidator().check(fichiers, spec)
+        self.assertFalse(rapport.ok)
+        self.assertIn("hr", rapport.texte())
+
+
+class TestConversionNeCasseRienEnAval(unittest.TestCase):
+    """Ce que le convertisseur écarte doit partir avec tout ce qui en dépend."""
+
+    def _convertir(self, fichiers):
+        dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(dossier.cleanup)
+        racine = os.path.join(dossier.name, "suivi_dossier")
+        _copier_exemple(racine, dict(fichiers))
+        return convertir(racine, "19.0")
+
+    def test_un_menu_perd_sa_cible_avec_l_action_ecartee(self):
+        """Un menu sans cible fait échouer le CHARGEMENT du module.
+
+        Et le message d'Odoo parle d'une référence externe introuvable : rien
+        n'indique que c'est la conversion qui a retiré l'action.
+        """
+        vues = """<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="action_gantt" model="ir.actions.act_window">
+    <field name="name">Planning</field>
+    <field name="res_model">suivi.dossier</field>
+    <field name="view_mode">gantt</field>
+  </record>
+  <menuitem id="menu_gantt" name="Planning" action="suivi_dossier.action_gantt"/>
+</odoo>
+"""
+        spec, rapport = self._convertir({"views/dossier_view.xml": vues})
+        spec.valider()
+        self.assertEqual(spec.menus, [], "le menu devait partir avec son action")
+        self.assertIn("modes ['gantt']", " | ".join(m.quoi for m in rapport.manques))
+
+    def test_une_reference_pointee_vers_son_propre_module_est_interne(self):
+        """« mails_tracker.action_x » écrit dans « mails_tracker » vise sa propre action."""
+        vues = """<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="action_dossier" model="ir.actions.act_window">
+    <field name="name">Dossiers</field>
+    <field name="res_model">suivi.dossier</field>
+    <field name="view_mode">tree,form</field>
+  </record>
+  <menuitem id="menu_dossier" name="Dossiers" action="suivi_dossier.action_dossier"/>
+</odoo>
+"""
+        spec, _ = self._convertir({"views/dossier_view.xml": vues})
+        spec.valider()
+        self.assertEqual([m.action for m in spec.menus], ["action_dossier"])
+
+    def test_une_vue_de_type_inconnu_n_invalide_pas_le_module(self):
+        """Un seul écran exotique empêchait la conversion du module entier."""
+        vues = """<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="vue_gantt" model="ir.ui.view">
+    <field name="name">planning</field>
+    <field name="model">suivi.dossier</field>
+    <field name="arch" type="xml"><gantt date_start="montant"/></field>
+  </record>
+</odoo>
+"""
+        spec, rapport = self._convertir({"views/dossier_view.xml": vues})
+        spec.valider()
+        self.assertEqual([v.type for v in spec.views], [])
+        self.assertIn("type « gantt »", " | ".join(m.quoi for m in rapport.manques))

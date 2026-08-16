@@ -19,7 +19,12 @@ from xml.etree import ElementTree
 
 from spec.module_spec import ModuleSpec
 
-CLES_MANIFESTE = ("name", "version", "depends", "data", "license")
+CLES_MANIFESTE = ("name", "version", "depends", "license")
+# « data » à part : un module qui n'étend que du Python — surcharges de
+# modèles, mixins — n'a légitimement aucun fichier de données. L'exiger
+# refusait des modules qu'Odoo installe très bien, et le refus tombait à la
+# conversion, loin de toute explication.
+CLE_DONNEES = "data"
 
 # Le module qui fournit un modèle, quand son nom ne se déduit pas du préfixe.
 # Ailleurs, le préfixe est le module : « hr.employee » vient de « hr »,
@@ -33,9 +38,25 @@ MODULE_DU_PREFIXE = {
 }
 
 
-def module_fournisseur(comodel: str) -> str:
-    """Le module Odoo qui déclare ce modèle, d'après son nom."""
-    prefixe = comodel.split(".")[0]
+def module_fournisseur(comodel: str, depends=()) -> str:
+    """Le module Odoo qui déclare ce modèle, d'après son nom.
+
+    Le nom d'un modèle ne dit PAS quel module le fournit : c'est une
+    convention, pas une règle. « quick.meetings » vient de « quick_meetings »,
+    et non d'un module « quick » qui n'existe pas — déduire du premier segment
+    faisait refuser une dépendance pourtant déclarée, avec un message parlant
+    d'un module imaginaire.
+
+    On confronte donc le nom aux dépendances réellement déclarées, du plus
+    long préfixe au plus court, avant de retomber sur la convention.
+    """
+    segments = comodel.split(".")
+    declarees = set(depends or ())
+    for longueur in range(len(segments), 0, -1):
+        candidat = "_".join(segments[:longueur])
+        if candidat in declarees:
+            return candidat
+    prefixe = segments[0]
     return MODULE_DU_PREFIXE.get(prefixe, prefixe)
 
 # Repère les champs cités dans un domaine : [('company_id', '=', ...)]
@@ -97,8 +118,10 @@ class OdooStaticValidator:
         dans les dépendances, trois fichiers plus loin.
 
         Le contrôle est délibérément syntaxique : connaître tous les modèles
-        d'Odoo demanderait un Odoo. Le nom suffit, parce qu'un modèle appartient
-        toujours au module dont il porte le préfixe.
+        d'Odoo demanderait un Odoo. Le nom suffit le plus souvent — mais la
+        correspondance nom de modèle / nom de module est une convention, pas
+        une règle, et « module_fournisseur » consulte donc d'abord les
+        dépendances réellement déclarées.
         """
         anomalies = []
         crees = {m.name for m in spec.modeles_nouveaux}
@@ -108,7 +131,7 @@ class OdooStaticValidator:
             for champ in modele.fields:
                 if not champ.comodel or champ.comodel in crees:
                     continue
-                fournisseur = module_fournisseur(champ.comodel)
+                fournisseur = module_fournisseur(champ.comodel, declares)
                 if fournisseur in declares:
                     continue
                 anomalies.append(
@@ -189,6 +212,8 @@ class OdooStaticValidator:
         for cle in CLES_MANIFESTE:
             if not declare.get(cle):
                 anomalies.append(Anomalie(chemin, f"clé « {cle} » absente ou vide"))
+        if CLE_DONNEES not in declare:
+            anomalies.append(Anomalie(chemin, "clé « data » absente"))
         return declare
 
     def _donnees_declarees(self, fichiers, racine, manifeste) -> list[Anomalie]:

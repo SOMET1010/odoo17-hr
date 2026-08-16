@@ -21,7 +21,18 @@ from spec.behavior import (
 
 NOM_TECHNIQUE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 NOM_MODELE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+# Ce qu'on LIT est plus varié que ce qu'on ÉCRIT. Odoo n'impose pas le point
+# dans un nom de modèle : « _name = 'suivi_diligence' » s'installe très bien.
+# Le refuser rendait inconvertible un module réel, pour une convention que la
+# plateforme n'applique pas elle-même.
+NOM_MODELE_LU = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
 NOM_CHAMP = re.compile(r"^[a-z][a-z0-9_]*$")
+# Un nom de champ est un attribut Python : Odoo y accepte les majuscules, et
+# des modules réels en portent. Refuser « reading_and_validation_of_the_CR »
+# rendait un module inconvertible pour une raison de style, pas de validité.
+# L'identifiant XML d'une action ou d'un menu, lui, reste en minuscules :
+# c'est une convention qu'on impose à ce qu'on ÉCRIT, pas à ce qu'on LIT.
+NOM_CHAMP_LU = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 TYPES_CHAMPS = {
     "char", "text", "html", "integer", "float", "monetary", "boolean",
@@ -58,7 +69,7 @@ class Champ:
         return self.compute is not None
 
     def valider(self, contexte: str) -> None:
-        if not NOM_CHAMP.match(self.name):
+        if not NOM_CHAMP_LU.match(self.name):
             raise SpecInvalide(f"{contexte} : nom de champ invalide « {self.name} ».")
         if self.type not in TYPES_CHAMPS:
             raise SpecInvalide(f"{contexte} : type de champ inconnu « {self.type} ».")
@@ -129,7 +140,7 @@ class Modele:
         return self.name.replace(".", "_")
 
     def valider(self) -> None:
-        if not NOM_MODELE.match(self.name):
+        if not NOM_MODELE_LU.match(self.name):
             raise SpecInvalide(f"Nom de modèle invalide « {self.name} ».")
         if self.inherit and self.inherit != self.name:
             raise SpecInvalide(
@@ -195,7 +206,7 @@ class Vue:
     def valider(self) -> None:
         if self.type not in TYPES_VUES:
             raise SpecInvalide(f"Type de vue inconnu « {self.type} » sur {self.model}.")
-        if not NOM_MODELE.match(self.model):
+        if not NOM_MODELE_LU.match(self.model):
             raise SpecInvalide(f"Vue {self.name} : modèle invalide « {self.model} ».")
 
 
