@@ -2552,3 +2552,20 @@ class TestAtelierLocal(unittest.TestCase):
             for cle, valeur in garde.items():
                 if valeur is not None:
                     os.environ[cle] = valeur
+
+    def test_ce_qui_est_declare_cache_le_reste_vraiment(self):
+        """« hidden » doit l'emporter sur toute règle d'affichage.
+
+        Une classe posant « display:flex » écrase l'attribut « hidden » du
+        HTML : l'Atelier affichait un bouton « Télécharger le module » avant
+        qu'aucun module n'existe, et le cliquer donnait une erreur. Le défaut
+        ne se lit pas dans la source — il naît de la cascade, et seul un
+        contrôle explicite l'empêche de revenir.
+        """
+        from interface_web import PAGE
+        self.assertIn("[hidden]{display:none !important}", PAGE)
+        # Les blocs concernés doivent bien porter l'attribut au départ.
+        for identifiant in ('id="carte-resume"', 'id="carte-journal"', 'id="erreur"'):
+            debut = PAGE.index(identifiant)
+            self.assertIn("hidden", PAGE[debut:debut + 120],
+                          f"{identifiant} devrait démarrer caché")

@@ -29,6 +29,11 @@ PAGE = r"""<!doctype html>
   --violet:#C79BB6; --violet-clair:#241C22; --ok:#63B48C; --refus:#DE7B74;
 }}
 *{box-sizing:border-box}
+/* « hidden » doit l'emporter sur toute règle d'affichage. Sans cela, une
+   classe qui pose « display:flex » rend visible ce que le HTML déclare caché
+   — et l'Atelier montrait un bouton de téléchargement avant qu'aucun module
+   n'existe. Le défaut ne se voit pas dans la source : il naît de la cascade. */
+[hidden]{display:none !important}
 body{margin:0;background:var(--fond);color:var(--encre);font-family:var(--sans);
      font-size:15px;line-height:1.5}
 .bandeau{background:var(--violet);color:#fff;padding:12px 22px;display:flex;
