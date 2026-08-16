@@ -1,0 +1,6 @@
+# Écrit par deployer/installer.sh sur la machine cible : contient le mot de
+# passe administrateur d'Odoo et le secret du service d'installation.
+.env
+
+__pycache__/
+*.pyc

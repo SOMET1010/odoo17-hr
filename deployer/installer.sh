@@ -8,12 +8,22 @@
 # qui héberge un Odoo de production : le Builder installe, casse et recrée des
 # modules, et une base de test peut être supprimée sans préavis.
 #
-# Il ne demande rien d'autre que la clé du service d'IA, et n'expose aucun port
-# sur l'extérieur : l'accès se fait par tunnel SSH, ou par un proxy inverse
-# placé devant, décidé séparément.
+# Par défaut il n'expose aucun port sur l'extérieur : l'accès se fait par
+# tunnel SSH. Avec --public, l'interface Odoo — et elle seule — est publiée
+# sur Internet, protégée par un mot de passe administrateur tiré au hasard.
+# Le service d'installation, lui, reste toujours sur 127.0.0.1.
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
+PUBLIC=""
+for argument in "$@"; do
+  case "$argument" in
+    --public) PUBLIC="oui" ;;
+    --prive)  PUBLIC="non" ;;
+    *) printf 'Option inconnue : %s\n' "$argument" >&2; exit 1 ;;
+  esac
+done
 
 VERT='\033[32m'; ROUGE='\033[31m'; JAUNE='\033[33m'; GRAS='\033[1m'; FIN='\033[0m'
 titre() { printf '\n%b=== %s%b\n' "$GRAS" "$*" "$FIN"; }
@@ -82,13 +92,18 @@ CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/atelier-odoo"
 ENVFILE="$CONFIG/env"
 mkdir -p "$CONFIG" && chmod 700 "$CONFIG"
 
+# Alphanumérique seulement : ce mot de passe traverse un shell, une commande
+# Docker et une chaîne Python. Sans ponctuation, il n'y a rien à échapper.
+hasard() { head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c "${1:-32}"; }
+
 if [[ -f "$ENVFILE" ]]; then
   ok "configuration existante conservée : $ENVFILE"
   # shellcheck disable=SC1090
   . "$ENVFILE"
 else
   info "Le secret du service d'installation est composé automatiquement."
-  INSTALLATEUR_CLE_API=$(head -c 32 /dev/urandom | base64 | tr -d '\n=/+' | head -c 40)
+  INSTALLATEUR_CLE_API=$(hasard 40)
+  ODOO_ADMIN_MOTDEPASSE=$(hasard 24)
 
   printf '\n  Clé du service d'"'"'IA qui rédigera les spécifications.\n'
   printf '  Laissez vide pour la configurer plus tard.\n'
@@ -98,6 +113,7 @@ else
   {
     echo "# Secrets de l'Atelier Odoo — ne pas partager, ne pas versionner."
     echo "export INSTALLATEUR_CLE_API=\"$INSTALLATEUR_CLE_API\""
+    echo "export ODOO_ADMIN_MOTDEPASSE=\"$ODOO_ADMIN_MOTDEPASSE\""
     [[ -n "${CLE_IA:-}" ]] && echo "export BUILDER_IA_CLE=\"$CLE_IA\""
   } > "$ENVFILE"
   chmod 600 "$ENVFILE"
@@ -106,13 +122,52 @@ else
   . "$ENVFILE"
 fi
 
+# Une installation antérieure à cette version n'a pas de mot de passe Odoo.
+if [[ -z "${ODOO_ADMIN_MOTDEPASSE:-}" ]]; then
+  ODOO_ADMIN_MOTDEPASSE=$(hasard 24)
+  umask 077
+  echo "export ODOO_ADMIN_MOTDEPASSE=\"$ODOO_ADMIN_MOTDEPASSE\"" >> "$ENVFILE"
+  ok "mot de passe administrateur Odoo ajouté à la configuration"
+fi
+
+# ------------------------------------------------------------- exposition
+
+titre "4. Accès"
+
+if [[ -z "$PUBLIC" ]]; then
+  printf '  Sans ouverture, l'"'"'Atelier n'"'"'est joignable que par tunnel SSH —\n'
+  printf '  impossible depuis un téléphone. Avec ouverture, l'"'"'interface Odoo\n'
+  printf '  est publiée sur Internet en HTTP, derrière son mot de passe.\n'
+  read -r -p "  Ouvrir l'interface sur Internet ? [o/N] " reponse
+  [[ "${reponse,,}" == o* ]] && PUBLIC="oui" || PUBLIC="non"
+fi
+
+if [[ "$PUBLIC" == "oui" ]]; then
+  BIND_ODOO="0.0.0.0"
+  avert "l'interface sera joignable depuis Internet, sans HTTPS."
+  info  "Le service d'installation, lui, reste sur 127.0.0.1."
+else
+  BIND_ODOO="127.0.0.1"
+  ok "aucun port ouvert — accès par tunnel SSH."
+fi
+
+# docker compose lit ce fichier tout seul : les réglages survivent à un
+# redémarrage et à un « docker compose up » lancé à la main.
+umask 077
+{
+  echo "# Écrit par deployer/installer.sh. Contient des secrets."
+  echo "BIND_ODOO=$BIND_ODOO"
+  echo "INSTALLATEUR_CLE_API=$INSTALLATEUR_CLE_API"
+  echo "ODOO_ADMIN_MOTDEPASSE=$ODOO_ADMIN_MOTDEPASSE"
+} > .env
+chmod 600 .env
+
 # ---------------------------------------------------------------- pile
 
-titre "4. Démarrage de la pile"
+titre "5. Démarrage de la pile"
 
 info "construction et démarrage — quelques minutes au premier passage…"
-if ! INSTALLATEUR_CLE_API="$INSTALLATEUR_CLE_API" \
-     $DOCKER compose --profile installateur up -d --build >/tmp/atelier-demarrage.log 2>&1; then
+if ! $DOCKER compose --profile installateur up -d --build >/tmp/atelier-demarrage.log 2>&1; then
   tail -20 /tmp/atelier-demarrage.log
   fatal "le démarrage a échoué. Journal complet : /tmp/atelier-demarrage.log"
 fi
@@ -132,30 +187,74 @@ $DOCKER compose run --rm odoo odoo -d ansut \
   -i diligence_simple,theme_backend,ansut_rh --stop-after-init \
   >/tmp/atelier-modules.log 2>&1 && ok "modules installés" \
   || avert "installation partielle — voir /tmp/atelier-modules.log"
+
+# Odoo crée le compte « admin » avec le mot de passe « admin ». Le laisser
+# serait une porte ouverte dès que le port 8069 l'est. On le remplace ici,
+# et non plus tard : le service d'installation s'authentifie avec.
+info "pose du mot de passe administrateur…"
+printf "%s\n" \
+  "env['res.users'].search([('login','=','admin')]).write({'password': '$ODOO_ADMIN_MOTDEPASSE'})" \
+  "env.cr.commit()" \
+  | $DOCKER compose run --rm -T odoo odoo shell -d ansut --log-level=warn \
+    >/tmp/atelier-motdepasse.log 2>&1 && ok "mot de passe administrateur posé" \
+    || avert "mot de passe inchangé — voir /tmp/atelier-motdepasse.log"
+
 $DOCKER compose --profile installateur up -d >/dev/null 2>&1
 
 # ------------------------------------------------------------ vérification
 
-titre "5. Vérification"
+titre "6. Vérification"
 
 curl -sS -o /dev/null --max-time 5 http://127.0.0.1:8090/sante 2>/dev/null \
   && ok "service d'installation joignable" \
   || avert "service d'installation muet — $DOCKER compose logs installateur"
 
-exposes=$($DOCKER compose ps --format '{{.Ports}}' 2>/dev/null | grep -c '0\.0\.0\.0' || true)
-if [[ "${exposes:-0}" -eq 0 ]]; then
-  ok "aucun port exposé sur l'extérieur"
+# Le seul port dont l'ouverture serait une faute, quel que soit le mode.
+if $DOCKER compose ps --format '{{.Ports}}' 2>/dev/null | grep -q '0\.0\.0\.0:8090'; then
+  avert "le service d'installation écoute sur toutes les interfaces — à corriger."
 else
-  avert "$exposes service(s) écoutent sur toutes les interfaces — vérifier BIND_ADRESSE."
+  ok "service d'installation confiné à la machine"
+fi
+
+# Le mot de passe ne compte que s'il est vraiment posé. On le vérifie des
+# deux côtés : le nouveau doit passer, l'ancien doit être refusé.
+connexion() {
+  curl -sS --max-time 10 -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"params\":{\"db\":\"ansut\",\"login\":\"admin\",\"password\":\"$1\"}}" \
+    http://127.0.0.1:8069/web/session/authenticate 2>/dev/null | grep -q '"uid": *[0-9]'
+}
+if connexion "$ODOO_ADMIN_MOTDEPASSE"; then
+  if connexion admin; then
+    avert "le mot de passe « admin » fonctionne encore."
+  else
+    ok "compte administrateur protégé"
+  fi
+else
+  avert "connexion administrateur impossible — voir /tmp/atelier-motdepasse.log"
 fi
 
 # ---------------------------------------------------------------- suite
 
 titre "C'est prêt"
 
-printf '  L'"'"'Atelier tourne, et n'"'"'est joignable que depuis cette machine.\n\n'
-printf '  %bDepuis votre poste%b, ouvrez un tunnel puis allez sur http://localhost:8069\n' "$GRAS" "$FIN"
-printf '      ssh -N -L 8069:127.0.0.1:8069 %s@%s\n\n' "${USER:-root}" "$(hostname -I 2>/dev/null | awk '{print $1}')"
+adresse=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)
+[[ -n "$adresse" ]] || adresse=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+if [[ "$PUBLIC" == "oui" ]]; then
+  printf '  %bLe back-office :%b http://%s:8069\n\n' "$GRAS" "$FIN" "${adresse:-<ip-du-serveur>}"
+  printf '      identifiant   admin\n'
+  printf '      mot de passe  %s\n\n' "$ODOO_ADMIN_MOTDEPASSE"
+  printf '  Notez ce mot de passe : il n'"'"'est réaffiché nulle part.\n'
+  printf '  La liaison est en HTTP, sans certificat — bon pour un atelier,\n'
+  printf '  pas pour des données réelles. Le HTTPS viendra avec le proxy.\n\n'
+else
+  printf '  L'"'"'Atelier tourne, et n'"'"'est joignable que depuis cette machine.\n\n'
+  printf '  %bDepuis votre poste%b, ouvrez un tunnel puis allez sur http://localhost:8069\n' "$GRAS" "$FIN"
+  printf '      ssh -N -L 8069:127.0.0.1:8069 %s@%s\n\n' "${USER:-root}" "${adresse:-<ip-du-serveur>}"
+  printf '      identifiant   admin\n'
+  printf '      mot de passe  %s\n\n' "$ODOO_ADMIN_MOTDEPASSE"
+fi
+
 printf '  %bSur cette machine%b, à chaque session :\n' "$GRAS" "$FIN"
 printf '      source %s\n\n' "$ENVFILE"
 if [[ -z "${BUILDER_IA_CLE:-}" ]]; then
