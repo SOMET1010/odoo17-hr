@@ -5,6 +5,36 @@ Builder installe, casse et recrée des modules ; une base de test peut y être
 supprimée sans préavis. C'est le but, et c'est pourquoi la machine doit être
 séparée.
 
+## Deux déploiements, et il faut choisir le bon
+
+|  | `installer-atelier.sh` | `installer.sh` |
+|---|---|---|
+| Ce qui tourne | l'interface + HTTPS | + Odoo, PostgreSQL, service d'installation |
+| Ce qu'on peut faire | décrire, convertir, thème, aperçu, **télécharger le ZIP** | tout cela, **et installer le module dans un vrai Odoo** |
+| Machine | 2 vCPU, 4 Go — ~4 €/mois | 4 vCPU, 8 Go — ~35 €/mois |
+| Fichier | `docker-compose.atelier.yml` | `docker-compose.yml` |
+
+La suite de ce document décrit le **second**. Pour le premier, il n'y a
+presque rien à dire :
+
+```bash
+bash deployer/installer-atelier.sh --domaine atelier.exemple.fr \
+                                   --courriel vous@exemple.fr
+```
+
+Sans `--domaine`, un nom dérivé de l'adresse IP est employé (sslip.io) et le
+certificat s'obtient dessus : rien à acheter. Le script affiche à la fin un
+**code d'installation** — il ne sert qu'à créer le premier compte, qui sera
+administrateur. Faites-le tout de suite : sur une adresse publique, le premier
+arrivé n'est pas forcément vous, et c'est précisément ce que ce code empêche.
+
+L'interface ne publie aucun port : la passerelle est le seul chemin. Tout —
+projets et comptes — tient dans un fichier SQLite porté par un volume ; la
+commande de sauvegarde s'affiche à la fin de l'installation.
+
+Recette de cette pile : `.docker/verifier-atelier-en-ligne.sh`, jouée par la
+forge à chaque envoi.
+
 ## Dimensionner
 
 Le dimensionnement suit la charge réelle — construire une image, faire tourner
