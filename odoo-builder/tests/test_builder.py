@@ -2183,3 +2183,36 @@ class TestConversionV12(unittest.TestCase):
         self.assertEqual(spec.access[0].group, "base.group_system")
         self.assertEqual(spec.access[0].perms, "r")
         self.assertNotIn("droits inventés", self._quoi(rapport))
+
+    def test_les_renommages_documentes_sont_nommes_par_leur_nouveau_nom(self):
+        """« argument inconnu » n'aide personne ; « renommé aggregator » si.
+
+        Relevé dans le journal officiel de l'ORM (odoo/documentation 19.0,
+        backend/orm/changelog.rst, Odoo Online 17.2), puis vérifié en source.
+        """
+        _, rapport = self._convertir()
+        manque = next(m for m in rapport.manques if "group_operator" in m.quoi)
+        self.assertEqual(manque.genre, OBSOLETE)
+        self.assertIn("aggregator", manque.pourquoi)
+
+    def test_une_methode_disparue_n_est_pas_donnee_a_reecrire(self):
+        """Réécrite à l'identique, « name_get » ne serait plus appelée."""
+        _, rapport = self._convertir()
+        disparue = next(m for m in rapport.manques
+                        if m.genre == OBSOLETE and "name_get" in m.quoi)
+        self.assertIn("display_name", disparue.pourquoi)
+
+    def test_les_contraintes_sql_disent_qu_odoo_19_les_ignore(self):
+        """Le point décisif n'est pas la conversion, c'est Odoo 19 lui-même.
+
+        « _sql_constraints » n'y est plus appliqué : Odoo journalise un
+        avertissement et la contrainte disparaît sans erreur
+        (odoo/orm/model_classes.py, 19.0). Recopier le code ne la sauverait
+        donc pas — et c'est précisément ce qu'un lecteur du rapport
+        supposerait si on ne le disait pas.
+        """
+        _, rapport = self._convertir()
+        manque = next(m for m in rapport.manques if "_sql_constraints" in m.quoi)
+        self.assertEqual(manque.genre, COMPORTEMENT)
+        self.assertIn("Odoo 19 ne l'applique plus", manque.pourquoi)
+        self.assertIn("sans erreur", manque.pourquoi)

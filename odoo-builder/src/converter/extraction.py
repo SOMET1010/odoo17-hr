@@ -70,10 +70,39 @@ ARGUMENTS_DE_CODE = {"compute", "related", "inverse", "search", "_compute"}
 
 # Tournures disparues, à signaler pour elles-mêmes : elles auraient dû être
 # réécrites de toute façon.
+#
+# SOURCE. Ces entrées ne viennent pas de la mémoire : elles sont relevées dans
+# le journal officiel de l'ORM (dépôt odoo/documentation, branche 19.0,
+# content/developer/reference/backend/orm/changelog.rst) puis vérifiées dans le
+# code de la version concernée. Une différence supposée est pire qu'une
+# différence ignorée — elle produit du code qui a l'air juste.
 OBSOLETES_PYTHON = {
     "_columns": "déclaration de champs d'avant Odoo 8",
     "_defaults": "valeurs par défaut d'avant Odoo 8",
     "_track": "suivi de champs d'avant Odoo 12",
+}
+
+# Arguments de champ renommés par Odoo. Les signaler par leur nouveau nom vaut
+# mieux que « argument inconnu » : c'est la différence entre une information et
+# un haussement d'épaules.
+ARGUMENTS_RENOMMES = {
+    # odoo/documentation 19.0, orm/changelog.rst, « Odoo Online version 17.2 » :
+    # « The group_operator attribute of Field is renamed into aggregator ».
+    "group_operator": "renommé « aggregator » en Odoo 17.2",
+    "track_visibility": "remplacé par « tracking » depuis Odoo 12",
+    "oldname": "supprimé en Odoo 13",
+    "digits_compute": "supprimé en Odoo 9, remplacé par « digits »",
+}
+
+# Méthodes de l'ORM dont le nom a changé, ou qui ont disparu. Le convertisseur
+# ne porte aucune méthode ; mais dire « celle-ci n'existe plus » vaut mieux que
+# « à réécrire », parce que la réécrire à l'identique ne marcherait pas.
+METHODES_DISPARUES = {
+    "name_get": "déprécié en Odoo 16.4 : lire le champ « display_name ».",
+    "read_group": "déprécié en Odoo 18.2 au profit de « _read_group » "
+                  "et « formatted_read_group ».",
+    "_flush_search": "déprécié en Odoo 17.1.",
+    "fields_view_get": "supprimé en Odoo 13 au profit de « get_view ».",
 }
 DECORATEURS_OBSOLETES = {
     "one": "@api.one a disparu en Odoo 13",
@@ -402,12 +431,25 @@ class Extracteur:
                     OBSOLETE, fichier, corps.lineno, f"« {cible.id} »",
                     OBSOLETES_PYTHON[cible.id],
                 )
-            elif cible.id == "_sql_constraints":
+            elif cible.id in ("_sql_constraints", "_constraints"):
+                # Odoo 19 ne les applique PLUS. Il se contente d'un
+                # avertissement dans le journal (odoo/orm/model_classes.py,
+                # 19.0 l. 162) : « Model attribute '_sql_constraints' is no
+                # longer supported, please define models.Constraint on the
+                # model. » Le module s'installe, la ligne défile, et une
+                # contrainte d'unicité qui protégeait les données depuis des
+                # années cesse d'exister sans que rien ne le signale à
+                # l'utilisateur. C'est pourquoi le message ne parle pas
+                # seulement de conversion : garder ce code tel quel ne
+                # sauverait pas la contrainte non plus.
                 self.rapport.noter(
-                    COMPORTEMENT, fichier, corps.lineno, "« _sql_constraints »",
-                    "ces contraintes vivent dans PostgreSQL ; la spécification "
-                    "décrit des contraintes Python, qui ne sont pas les mêmes.",
-                    "à redemander dans l'Atelier sous forme de contraintes.",
+                    COMPORTEMENT, fichier, corps.lineno, f"« {cible.id} »",
+                    "Odoo 19 ne l'applique plus : il journalise un "
+                    "avertissement et la contrainte disparaît sans erreur. "
+                    "La recopier telle quelle dans le module converti ne la "
+                    "rétablirait donc pas.",
+                    "à redemander dans l'Atelier comme contrainte, ou à "
+                    "réécrire en « models.Constraint » pour Odoo 19.",
                 )
             elif cible.id == "_inherits":
                 self.rapport.noter(
@@ -476,8 +518,11 @@ class Extracteur:
             )
         for cle in arguments.pop("_inconnus", []):
             self.rapport.noter(
-                STRUCTURE, fichier, noeud.lineno, f"champ « {nom} » : {cle}=…",
-                "argument absent du vocabulaire de la spécification.",
+                OBSOLETE if cle in ARGUMENTS_RENOMMES else STRUCTURE,
+                fichier, noeud.lineno, f"champ « {nom} » : {cle}=…",
+                ARGUMENTS_RENOMMES.get(
+                    cle, "argument absent du vocabulaire de la spécification."
+                ),
             )
 
         if type_champ == "selection" and not arguments.get("selection"):
@@ -588,6 +633,14 @@ class Extracteur:
                 "depends": "champ calculé", "constrains": "contrainte",
                 "onchange": "onchange", "model_create_multi": "surcharge de création",
             }.get(attribut, genre)
+
+        if noeud.name in METHODES_DISPARUES:
+            # Dire « à réécrire » serait un mauvais conseil : réécrite à
+            # l'identique, elle ne serait plus appelée par personne.
+            self.rapport.noter(
+                OBSOLETE, fichier, noeud.lineno, f"surcharge de « {noeud.name} »",
+                METHODES_DISPARUES[noeud.name],
+            )
 
         ecrits = self._etats_ecrits(noeud)
         conduite = (
