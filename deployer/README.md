@@ -64,9 +64,15 @@ en HTTP, aucune interface hébergée ailleurs ne pourra jamais l'atteindre. C'es
 la condition d'existence du raccordement, pas un réglage de confort.
 
 Sans `--domaine`, un nom est dérivé de l'adresse IP via **sslip.io** —
-`62-238-99-108.sslip.io` résout vers `62.238.99.108`. Rien à acheter, rien à
+`203-0-113-10.sslip.io` résout vers `203.0.113.10`. Rien à acheter, rien à
 configurer chez un registraire. Un vrai domaine reste préférable : il survit à
 un changement d'adresse, pas celui-ci.
+
+L'adresse ci-dessus vient de la plage que la RFC 5737 réserve à la
+documentation. C'est délibéré : une IP réelle citée en exemple finit par
+désigner la machine de quelqu'un d'autre le jour où on rend la sienne, et le
+lecteur d'une documentation ne devrait jamais pouvoir toucher un serveur
+inconnu en recopiant ce qu'il lit.
 
 Deux conditions, que l'installeur vérifie plutôt que de les supposer : les
 ports 80 et 443 doivent être libres, et joignables depuis Internet — l'autorité
