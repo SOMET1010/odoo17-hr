@@ -66,8 +66,14 @@ jobs:
       - name: Diagnostiquer le fournisseur
         run: python3 odoo-builder/cli/atelier_odoo.py providers check
 
+      # « set -o pipefail » n'est pas un détail : sans lui, le tube rend le code
+      # de sortie de « tee », toujours nul, et un job vert affiche un verdict
+      # rouge sans que rien n'échoue. Une recette qui ment sur son résultat est
+      # pire que pas de recette.
       - name: Jouer l'acceptation
-        run: python3 odoo-builder/cli/acceptation.py | tee /tmp/acceptation.log
+        run: |
+          set -o pipefail
+          python3 odoo-builder/cli/acceptation.py | tee /tmp/acceptation.log
 
       - name: Journaux, quoi qu'il arrive
         if: always()

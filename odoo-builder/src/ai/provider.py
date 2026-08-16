@@ -34,6 +34,23 @@ class ErreurFournisseur(Exception):
         self.corps = corps
 
 
+def _apercu(valeur, limite: int = 300) -> str:
+    """Ce que le service a réellement rendu, tronqué et sur une seule ligne.
+
+    Sans cet aperçu, « Expecting value: line 1 column 1 » ne distingue pas une
+    réponse vide, une réponse enrobée de ```json, une page HTML d'un portail
+    d'authentification, ni un message d'erreur en clair. Ce sont quatre causes
+    différentes et quatre corrections différentes.
+    """
+    if valeur is None:
+        return "(rien)"
+    texte = valeur if isinstance(valeur, str) else json.dumps(valeur, ensure_ascii=False)
+    if not texte.strip():
+        return "(réponse vide)"
+    texte = " ".join(texte.split())
+    return texte[:limite] + ("…" if len(texte) > limite else "")
+
+
 def _corps_erreur(erreur) -> str:
     """Le corps d'une réponse en erreur, tronqué. Les API y nomment la cause."""
     try:
@@ -113,10 +130,26 @@ class OpenAIProvider(AIProvider):
             raise ErreurFournisseur(f"point d'entrée injoignable : {erreur.reason}")
 
         try:
-            texte = donnee["choices"][0]["message"]["content"]
-            return json.loads(texte)
-        except (KeyError, IndexError, json.JSONDecodeError) as erreur:
-            raise ErreurFournisseur(f"réponse inexploitable : {erreur}")
+            choix = donnee["choices"][0]
+            texte = choix["message"]["content"]
+        except (KeyError, IndexError) as erreur:
+            raise ErreurFournisseur(
+                f"réponse inexploitable : {erreur} — reçu : {_apercu(donnee)}"
+            )
+
+        # « response_format: json_object » n'est pas honoré partout : certains
+        # services rendent le JSON enrobé de ```json … ``` ou précédé d'une
+        # phrase. Le chemin Anthropic passait déjà par extraire_json ; celui-ci
+        # supposait la consigne respectée, et échouait sur « Expecting value:
+        # line 1 column 1 » — message qui ne dit rien de ce qui a été reçu.
+        try:
+            return extraire_json(texte or "")
+        except ErreurFournisseur as erreur:
+            raison = choix.get("finish_reason")
+            détail = f" (finish_reason : {raison})" if raison else ""
+            raise ErreurFournisseur(
+                f"{erreur}{détail} — reçu : {_apercu(texte)}"
+            )
 
 
 class AnthropicProvider(AIProvider):

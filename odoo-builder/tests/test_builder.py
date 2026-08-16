@@ -1429,3 +1429,84 @@ class TestRelationsEtDependances(unittest.TestCase):
         from spec.drafter import CONTRAT
         self.assertIn("hr.employee", CONTRAT)
         self.assertIn("depends", CONTRAT)
+
+
+class FournisseurHttpSimule(OpenAIProvider):
+    """Un OpenAIProvider dont on choisit la réponse HTTP, sans réseau."""
+
+    def __init__(self, charge):
+        super().__init__(cle_api="sk-essai")
+        self.charge = charge
+
+    def completer_json(self, consigne, contexte):
+        import ai.provider as fournisseur_module
+        vrai = fournisseur_module.urllib.request.urlopen
+        classe = self.__class__
+
+        class Reponse:
+            def __init__(self, texte): self.texte = texte
+            def read(self): return self.texte.encode("utf-8")
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        fournisseur_module.urllib.request.urlopen = \
+            lambda *a, **k: Reponse(json.dumps(self.charge))
+        try:
+            return OpenAIProvider.completer_json(self, consigne, contexte)
+        finally:
+            fournisseur_module.urllib.request.urlopen = vrai
+
+
+def _reponse(contenu, finish_reason=None):
+    message = {"choices": [{"message": {"content": contenu}}]}
+    if finish_reason:
+        message["choices"][0]["finish_reason"] = finish_reason
+    return message
+
+
+class TestReponseDuFournisseur(unittest.TestCase):
+    """« response_format: json_object » n'est pas honoré partout.
+
+    Le chemin OpenAI faisait json.loads sur la réponse brute, quand le chemin
+    Anthropic passait par extraire_json. Un service qui enrobe son JSON de
+    ```json échouait donc sur « Expecting value: line 1 column 1 (char 0) » —
+    message qui ne dit rien de ce qui a été reçu, et qu'on a mis un tour
+    complet à comprendre.
+    """
+
+    def test_json_nu_est_lu(self):
+        f = FournisseurHttpSimule(_reponse('{"a": 1}'))
+        self.assertEqual(f.completer_json("c", "x"), {"a": 1})
+
+    def test_json_enrobe_de_balises_est_lu(self):
+        f = FournisseurHttpSimule(_reponse('```json\n{"a": 1}\n```'))
+        self.assertEqual(f.completer_json("c", "x"), {"a": 1})
+
+    def test_json_precede_d_une_phrase_est_lu(self):
+        f = FournisseurHttpSimule(_reponse('Voici la spécification :\n{"a": 1}'))
+        self.assertEqual(f.completer_json("c", "x"), {"a": 1})
+
+    def test_une_reponse_vide_le_dit(self):
+        f = FournisseurHttpSimule(_reponse(""))
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("réponse vide", str(capture.exception))
+
+    def test_l_erreur_montre_ce_qui_a_ete_recu(self):
+        f = FournisseurHttpSimule(_reponse("<html>Portail d'authentification</html>"))
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("html", str(capture.exception).lower())
+
+    def test_une_reponse_tronquee_nomme_la_cause(self):
+        """finish_reason distingue « le modèle a mal répondu » de « ça a coupé »."""
+        f = FournisseurHttpSimule(_reponse('{"a": 1', finish_reason="length"))
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("length", str(capture.exception))
+
+    def test_une_charge_sans_choices_montre_la_charge(self):
+        f = FournisseurHttpSimule({"error": {"message": "quota dépassé"}})
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("quota", str(capture.exception))
