@@ -29,7 +29,7 @@ import sys
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
-from ai.provider import OpenAIProvider  # noqa: E402
+from ai.provider import fournisseur_depuis_environnement  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import OdooInstallClient  # noqa: E402
 from installer.odoo_runtime import ErreurRuntime, OdooRuntime  # noqa: E402
@@ -56,10 +56,14 @@ def controle(ok: bool, message: str) -> bool:
 
 
 def principal() -> int:
-    for variable in ("OPENAI_API_KEY", "INSTALLATEUR_CLE_API"):
-        if not os.environ.get(variable):
-            print(f"{ROUGE}{variable} n'est pas définie.{FIN}")
-            return 2
+    fournisseur = fournisseur_depuis_environnement()
+    if fournisseur is None:
+        print(f"{ROUGE}Aucun fournisseur de modèle : définir BUILDER_IA_CLE "
+              f"ou OPENAI_API_KEY.{FIN}")
+        return 2
+    if not os.environ.get("INSTALLATEUR_CLE_API"):
+        print(f"{ROUGE}INSTALLATEUR_CLE_API n'est pas définie.{FIN}")
+        return 2
 
     service = os.environ.get("INSTALLATEUR_URL", "http://localhost:8090")
     odoo_url = os.environ.get("ODOO_URL", "http://localhost:8069")
@@ -70,7 +74,7 @@ def principal() -> int:
 
     # --- 1. Le modèle rédige la spécification, sans retouche.
     print(f"\n{GRAS}=== 1. Besoin → ModuleSpec ==={FIN}")
-    redacteur = SpecDrafter(OpenAIProvider())
+    redacteur = SpecDrafter(fournisseur)
     try:
         spec = redacteur.draft(BESOIN, lambda m: print(f"  {m}", flush=True))
     except RedactionImpossible as erreur:

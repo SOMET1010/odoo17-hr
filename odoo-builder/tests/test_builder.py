@@ -630,3 +630,41 @@ class TestInvariantsDeSecurite(unittest.TestCase):
         # La reprise est validée par ModuleSpec, pas acceptée sur parole.
         self.assertEqual(rendue.technical_name, "mon_module")
         self.assertEqual(len(fournisseur.appels), 2)
+
+
+class TestFournisseurConfigurable(unittest.TestCase):
+    """Changer de fournisseur ne doit toucher aucun autre fichier."""
+
+    def setUp(self):
+        self.anciennes = {
+            c: os.environ.get(c)
+            for c in ("BUILDER_IA_CLE", "BUILDER_IA_URL", "BUILDER_IA_MODELE", "OPENAI_API_KEY")
+        }
+        for c in self.anciennes:
+            os.environ.pop(c, None)
+
+    def tearDown(self):
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_aucun_fournisseur_sans_cle(self):
+        from ai.provider import fournisseur_depuis_environnement
+        self.assertIsNone(fournisseur_depuis_environnement())
+
+    def test_point_d_entree_et_modele_viennent_de_l_environnement(self):
+        from ai.provider import fournisseur_depuis_environnement
+        os.environ["BUILDER_IA_CLE"] = "cle-de-test"
+        os.environ["BUILDER_IA_URL"] = "https://exemple.invalide/v1/chat/completions"
+        os.environ["BUILDER_IA_MODELE"] = "un-autre-modele"
+        fournisseur = fournisseur_depuis_environnement()
+        self.assertEqual(fournisseur.url, "https://exemple.invalide/v1/chat/completions")
+        self.assertEqual(fournisseur.modele, "un-autre-modele")
+
+    def test_repli_sur_openai_par_defaut(self):
+        from ai.provider import fournisseur_depuis_environnement
+        os.environ["OPENAI_API_KEY"] = "cle-de-test"
+        fournisseur = fournisseur_depuis_environnement()
+        self.assertIn("api.openai.com", fournisseur.url)

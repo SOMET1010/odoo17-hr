@@ -19,7 +19,7 @@ import sys
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
-from ai.provider import OpenAIProvider  # noqa: E402
+from ai.provider import fournisseur_depuis_environnement  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import (  # noqa: E402
     ErreurInstallation, OdooInstallClient, empaqueter,
@@ -39,13 +39,15 @@ def journal(message: str) -> None:
 def _charger_spec(args) -> ModuleSpec:
     """Depuis un fichier, ou depuis un besoin en français via le modèle."""
     if args.besoin:
-        if not os.environ.get("OPENAI_API_KEY"):
+        fournisseur = fournisseur_depuis_environnement()
+        if fournisseur is None:
             raise SpecInvalide(
-                "OPENAI_API_KEY n'est pas définie : impossible de traduire un "
-                "besoin en spécification. Fournir un fichier de spécification, "
-                "ou définir la clé."
+                "Aucun fournisseur de modèle configuré (BUILDER_IA_CLE ou "
+                "OPENAI_API_KEY) : impossible de traduire un besoin en "
+                "spécification. Fournir un fichier de spécification, ou "
+                "définir la clé dans l'environnement."
             )
-        redacteur = SpecDrafter(OpenAIProvider(), tentatives_max=args.tentatives)
+        redacteur = SpecDrafter(fournisseur, tentatives_max=args.tentatives)
         spec = redacteur.draft(args.besoin, journal)
         if args.ecrire_spec:
             with open(args.ecrire_spec, "w", encoding="utf-8") as f:
@@ -93,9 +95,9 @@ def commande_build(args) -> int:
             print("  Démarrer la pile : docker compose --profile installateur up -d")
             return 2
 
-    fournisseur = OpenAIProvider() if os.environ.get("OPENAI_API_KEY") else None
+    fournisseur = fournisseur_depuis_environnement()
     if fournisseur is None and not args.sans_installation:
-        journal("(aucun OPENAI_API_KEY : réparation automatique désactivée)")
+        journal("(aucun fournisseur de modèle : réparation automatique désactivée)")
 
     boucle = RepairLoop(
         OdooModuleGenerator(),

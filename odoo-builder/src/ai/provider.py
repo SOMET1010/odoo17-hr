@@ -88,6 +88,33 @@ class OpenAIProvider(AIProvider):
             raise ErreurFournisseur(f"réponse inexploitable : {erreur}")
 
 
+def fournisseur_depuis_environnement() -> AIProvider | None:
+    """Construit le fournisseur décrit par l'environnement, ou None.
+
+    Le protocole est celui d'OpenAI ; l'hôte, le modèle et la clé viennent de
+    l'environnement. N'importe quel service exposant une API compatible OpenAI
+    convient — Moonshot/Kimi, un service local, un proxy d'entreprise — sans
+    toucher une ligne du Builder. C'est ce que l'abstraction devait permettre.
+
+        BUILDER_IA_URL     point d'entrée « chat completions » du fournisseur
+        BUILDER_IA_MODELE  nom du modèle chez ce fournisseur
+        BUILDER_IA_CLE     clé ; à défaut OPENAI_API_KEY
+
+    Aucune de ces valeurs n'est acceptée en argument de commande : une clé
+    passée ainsi fuirait dans l'historique du shell et la liste des processus.
+    """
+    cle = os.environ.get("BUILDER_IA_CLE") or os.environ.get("OPENAI_API_KEY", "")
+    if not cle:
+        return None
+    return OpenAIProvider(
+        cle_api=cle,
+        modele=os.environ.get("BUILDER_IA_MODELE", "gpt-4o"),
+        url=os.environ.get(
+            "BUILDER_IA_URL", "https://api.openai.com/v1/chat/completions"
+        ),
+    )
+
+
 class ScriptedProvider(AIProvider):
     """Fournisseur déterministe, pour les recettes et le mode hors ligne.
 

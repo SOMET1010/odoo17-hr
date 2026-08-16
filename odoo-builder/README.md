@@ -69,8 +69,22 @@ fournisseur ne touche aucun autre fichier.
 
 | Implémentation | Usage |
 |---|---|
-| `OpenAIProvider` | production — `OPENAI_API_KEY`, appel HTTP direct, sans SDK |
+| `OpenAIProvider` | production — protocole OpenAI, appel HTTP direct, sans SDK |
 | `ScriptedProvider` | recettes et mode hors ligne — réponses déterministes |
+
+Le **protocole** est celui d'OpenAI ; l'**hôte**, le **modèle** et la **clé**
+viennent de l'environnement. N'importe quel service exposant une API
+compatible OpenAI convient — un autre fournisseur, un service local, un proxy
+d'entreprise — sans toucher une ligne du Builder :
+
+```bash
+export BUILDER_IA_CLE="…"
+export BUILDER_IA_URL="https://…/v1/chat/completions"
+export BUILDER_IA_MODELE="…"
+```
+
+À défaut, `OPENAI_API_KEY` et les valeurs OpenAI par défaut s'appliquent.
+Aucune de ces valeurs n'est acceptée en argument de commande.
 
 Sans `OPENAI_API_KEY`, la chaîne fonctionne toujours à partir d'un `spec.json` :
 seules la rédaction depuis un besoin et la réparation automatique sont
