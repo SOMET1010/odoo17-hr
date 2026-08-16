@@ -26,6 +26,7 @@ KEEP=0
 VERT='\033[32m'; ROUGE='\033[31m'; JAUNE='\033[33m'; GRAS='\033[1m'; FIN='\033[0m'
 titre() { printf '\n%b=== %s%b\n' "$GRAS" "$*" "$FIN"; }
 ECHECS=0
+RATES=()
 controle() {
   if [[ "$1" == "0" ]]; then
     printf '  %bOK%b    %s\n' "$VERT" "$FIN" "$2"
@@ -33,6 +34,10 @@ controle() {
     printf '  %bÉCHEC%b %s\n' "$ROUGE" "$FIN" "$2"
     [[ -n "${3:-}" ]] && printf '        %s\n' "$3"
     ECHECS=$((ECHECS + 1))
+    # Retenu pour être REDIT à la toute fin. Les journaux des conteneurs font
+    # des centaines de lignes ; sans ce rappel, il faut les remonter pour
+    # savoir ce qui a échoué. C'est une leçon déjà payée sur une autre recette.
+    RATES+=("$2")
   fi
 }
 
@@ -157,9 +162,13 @@ titre "Étape 4 — L'interface n'est joignable que par la passerelle"
 # ports EXPOSÉS — ceux du Dockerfile, joignables des seuls conteneurs voisins.
 # Y chercher « 8100 » ferait échouer une configuration parfaitement close.
 # « port » ne rend une adresse que s'il existe une PUBLICATION vers l'hôte.
-publie=$("${PILE[@]}" port atelier-web 8100 2>/dev/null)
-[[ -z "$publie" ]]
-controle $? "Aucun port 8100 n'est publié sur l'hôte." "publié sur : $publie"
+# Et on lit sa réponse pour ce qu'elle est : faute de publication, « port »
+# n'écrit pas rien — il écrit « :0 », un port zéro qui ne désigne aucune
+# publication. Tester la seule vacuité de la réponse déclarait donc publié un
+# service qui ne l'était pas.
+publie=$("${PILE[@]}" port atelier-web 8100 2>/dev/null | tr -d '[:space:]')
+[[ -z "$publie" || "$publie" == ":0" || "$publie" == *":0" ]]
+controle $? "Aucun port 8100 n'est publié sur l'hôte." "« port » a répondu : ${publie:-(rien)}"
 
 curl -sS -o /dev/null --max-time 3 http://127.0.0.1:8100/sante >/dev/null 2>&1
 [[ $? -ne 0 ]]
@@ -323,4 +332,11 @@ fi
 printf '%b%d contrôle(s) en échec.%b\n' "$ROUGE" "$ECHECS" "$FIN"
 "${PILE[@]}" logs --tail=60 atelier-web 2>&1 | tail -60
 "${PILE[@]}" logs --tail=30 passerelle 2>&1 | tail -30
+
+# Le verdict EN DERNIER, après les journaux : c'est la dernière chose qu'on
+# lit, et la première qu'on cherche.
+printf '\n%b=== Ce qui a échoué%b\n' "$GRAS" "$FIN"
+for rate in "${RATES[@]}"; do
+  printf '  %b·%b %s\n' "$ROUGE" "$FIN" "$rate"
+done
 exit 1
