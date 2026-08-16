@@ -49,6 +49,29 @@ BESOIN = """Je veux un module de gestion des missions avec :
 resultats: list[tuple[bool, str]] = []
 
 
+def identifiants_odoo() -> tuple[str, str]:
+    """Le compte qui servira à éprouver le module, et son mot de passe.
+
+    « admin/admin » n'est vrai que sur une instance de développement fermée.
+    Dès que le port 8069 est ouvert, `deployer/installer.sh` remplace ce mot de
+    passe par un tirage aléatoire ; le supposer inchangé faisait échouer la
+    dernière étape sur un « Access Denied » sans rapport avec le module
+    fabriqué — le module était installé, c'était la connexion qui était
+    refusée.
+
+    Deux noms sont acceptés : `ODOO_ADMIN_MOTDEPASSE`, écrit par l'installeur
+    dans le fichier de secrets, et `ODOO_MOTDEPASSE`, que le service
+    d'installation reçoit déjà par docker-compose. Les faire diverger pour rien
+    obligerait à savoir lequel vaut où.
+    """
+    return (
+        os.environ.get("ODOO_LOGIN") or "admin",
+        os.environ.get("ODOO_ADMIN_MOTDEPASSE")
+        or os.environ.get("ODOO_MOTDEPASSE")
+        or "admin",
+    )
+
+
 def controle(ok: bool, message: str) -> bool:
     resultats.append((ok, message))
     marque = f"{VERT}OK{FIN}   " if ok else f"{ROUGE}ÉCHEC{FIN}"
@@ -69,6 +92,8 @@ def principal() -> int:
     service = os.environ.get("INSTALLATEUR_URL", "http://localhost:8090")
     odoo_url = os.environ.get("ODOO_URL", "http://localhost:8069")
     base = os.environ.get("ODOO_BASE", "ansut")
+
+    login, motdepasse = identifiants_odoo()
 
     print(f"{GRAS}=== Fournisseurs ==={FIN}")
     noms = getattr(fournisseur, "noms", None)
@@ -133,12 +158,24 @@ def principal() -> int:
         controle(False, "Aucun modèle porteur de cycle de vie à éprouver.")
         return rendre_verdict()
 
-    runtime = OdooRuntime(odoo_url, base, "admin", "admin")
+    runtime = OdooRuntime(odoo_url, base, login, motdepasse)
     try:
         runtime.authentifier()
         resultat = _eprouver(runtime, spec, modele_principal)
     except ErreurRuntime as erreur:
         controle(False, f"Exécution : {erreur}")
+        if "Access Denied" in str(erreur):
+            # Ce refus ne dit rien du module fabriqué : il vient du compte
+            # utilisé pour l'éprouver. Le distinguer épargne de chercher un
+            # défaut dans une spécification parfaitement correcte.
+            print(f"\n  Le module est installé ; c'est la connexion qui est "
+                  f"refusée, avec le compte « {login} ».")
+            print("  Le mot de passe vient de ODOO_ADMIN_MOTDEPASSE, absente "
+                  "ici." if not os.environ.get("ODOO_ADMIN_MOTDEPASSE")
+                  else "  Le mot de passe fourni par ODOO_ADMIN_MOTDEPASSE est "
+                       "refusé par cette base.")
+            print("  Sur une machine installée par deployer/installer.sh :")
+            print("      source ~/.config/atelier-odoo/env")
         return rendre_verdict()
     consigner(fournisseur, redacteur, spec)
     return rendre_verdict()

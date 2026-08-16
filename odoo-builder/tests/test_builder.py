@@ -1270,3 +1270,55 @@ class TestDeclarationDuFournisseur(unittest.TestCase):
         with open(self.chemin, encoding="utf-8") as f:
             lignes = f.read().splitlines()
         self.assertIn('export BUILDER_IA_CLE="sk-secret"', lignes)
+
+
+import acceptation  # noqa: E402
+
+
+class TestIdentifiantsOdoo(unittest.TestCase):
+    """Le compte qui éprouve le module n'est pas toujours « admin/admin ».
+
+    L'installeur remplace ce mot de passe dès que le port 8069 est ouvert.
+    Le supposer inchangé faisait échouer l'acceptation sur « Access Denied »
+    alors que le module était installé et correct : l'échec accusait la
+    fabrication, quand seule la connexion était en cause.
+    """
+
+    VARIABLES = ("ODOO_LOGIN", "ODOO_ADMIN_MOTDEPASSE", "ODOO_MOTDEPASSE")
+
+    def setUp(self):
+        self.anciennes = {c: os.environ.get(c) for c in self.VARIABLES}
+        for c in self.VARIABLES:
+            os.environ.pop(c, None)
+
+    def tearDown(self):
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_sans_rien_le_defaut_de_developpement(self):
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "admin"))
+
+    def test_le_mot_de_passe_de_l_installeur_est_pris(self):
+        os.environ["ODOO_ADMIN_MOTDEPASSE"] = "tirage-aleatoire"
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "tirage-aleatoire"))
+
+    def test_le_nom_utilise_par_docker_compose_convient_aussi(self):
+        os.environ["ODOO_MOTDEPASSE"] = "par-compose"
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "par-compose"))
+
+    def test_celui_de_l_installeur_l_emporte_sur_celui_de_compose(self):
+        os.environ["ODOO_ADMIN_MOTDEPASSE"] = "installeur"
+        os.environ["ODOO_MOTDEPASSE"] = "compose"
+        self.assertEqual(acceptation.identifiants_odoo()[1], "installeur")
+
+    def test_le_compte_peut_etre_autre_qu_admin(self):
+        os.environ["ODOO_LOGIN"] = "atelier"
+        self.assertEqual(acceptation.identifiants_odoo()[0], "atelier")
+
+    def test_une_valeur_vide_ne_remplace_pas_le_defaut(self):
+        """Une variable exportée vide est un oubli, pas un mot de passe vide."""
+        os.environ["ODOO_ADMIN_MOTDEPASSE"] = ""
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "admin"))
