@@ -1,0 +1,52 @@
+# Passerelle de l'Atelier : le seul point d'entrée depuis Internet.
+#
+# Elle existe pour trois raisons, dans cet ordre :
+#
+#   1. Un navigateur sur une page HTTPS refuse d'appeler un backend en HTTP.
+#      Tant que l'Atelier parle à Odoo en clair, aucune interface hébergée
+#      ailleurs ne pourra jamais l'atteindre. Ce n'est pas un réglage de
+#      confort : c'est la condition d'existence du raccordement.
+#   2. Un mot de passe qui voyage en clair est un mot de passe public.
+#   3. Ce qui n'a pas de route ici n'est pas joignable. Le service
+#      d'installation n'en a aucune, et c'est délibéré : il reçoit des archives
+#      et installe du code.
+#
+# Caddy obtient et renouvelle le certificat seul. Sur « localhost », il signe
+# avec son autorité interne — ce qui permet d'éprouver exactement ce chemin
+# en recette, sans dépendre de Let's Encrypt ni d'un nom public.
+
+{
+	email {$ATELIER_COURRIEL:atelier@example.invalid}
+	# La passerelle n'expose rien d'elle-même : pas d'API d'administration.
+	admin off
+}
+
+{$ATELIER_DOMAINE:localhost} {
+	encode zstd gzip
+
+	# Odoo 17 sert le temps réel — chatter, notifications — en websocket sur un
+	# port distinct. Sans cette route, l'interface se charge normalement et
+	# rien ne remonte jamais : une panne silencieuse, longue à diagnostiquer.
+	handle /websocket {
+		reverse_proxy odoo:8072
+	}
+
+	handle {
+		reverse_proxy odoo:8069
+	}
+
+	header {
+		# Une fois le site vu en HTTPS, le navigateur refuse d'y revenir en
+		# clair. Ce qui rend aussi tout repli accidentel visible.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}

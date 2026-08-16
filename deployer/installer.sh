@@ -8,20 +8,31 @@
 # qui héberge un Odoo de production : le Builder installe, casse et recrée des
 # modules, et une base de test peut être supprimée sans préavis.
 #
-# Par défaut il n'expose aucun port sur l'extérieur : l'accès se fait par
-# tunnel SSH. Avec --public, l'interface Odoo — et elle seule — est publiée
-# sur Internet, protégée par un mot de passe administrateur tiré au hasard.
-# Le service d'installation, lui, reste toujours sur 127.0.0.1.
+# Trois accès possibles, demandés à l'installation ou passés en option :
+#
+#   --https                 passerelle HTTPS, certificat automatique. Sans
+#   --domaine mon.site.fr   domaine fourni, un nom dérivé de l'adresse IP est
+#                           employé (sslip.io) : rien à acheter.
+#   --public                interface ouverte en clair, sans chiffrement.
+#   --prive                 rien d'ouvert ; accès par tunnel SSH.
+#
+# Dans tous les cas le service d'installation reste sur 127.0.0.1 : il reçoit
+# des archives et installe du code, il n'a rien à faire sur Internet.
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-PUBLIC=""
-for argument in "$@"; do
-  case "$argument" in
-    --public) PUBLIC="oui" ;;
-    --prive)  PUBLIC="non" ;;
-    *) printf 'Option inconnue : %s\n' "$argument" >&2; exit 1 ;;
+MODE=""        # https | http | ferme
+DOMAINE=""
+COURRIEL=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --https)    MODE="https"; shift ;;
+    --domaine)  MODE="https"; DOMAINE="${2:-}"; shift 2 ;;
+    --courriel) COURRIEL="${2:-}"; shift 2 ;;
+    --public)   MODE="http";  shift ;;
+    --prive)    MODE="ferme"; shift ;;
+    *) printf 'Option inconnue : %s\n' "$1" >&2; exit 1 ;;
   esac
 done
 
@@ -153,22 +164,60 @@ fi
 
 titre "4. Accès"
 
-if [[ -z "$PUBLIC" ]]; then
-  printf '  Sans ouverture, l'"'"'Atelier n'"'"'est joignable que par tunnel SSH —\n'
-  printf '  impossible depuis un téléphone. Avec ouverture, l'"'"'interface Odoo\n'
-  printf '  est publiée sur Internet en HTTP, derrière son mot de passe.\n'
-  read -r -p "  Ouvrir l'interface sur Internet ? [o/N] " reponse
-  [[ "${reponse,,}" == o* ]] && PUBLIC="oui" || PUBLIC="non"
+adresse=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)
+[[ -n "$adresse" ]] || adresse=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+if [[ -z "$MODE" ]]; then
+  printf '  %bhttps%b  interface chiffrée, certificat automatique — recommandé,\n' "$GRAS" "$FIN"
+  printf '         et seule option qu'"'"'un navigateur laissera appeler depuis\n'
+  printf '         une autre application web.\n'
+  printf '  %bhttp%b   ouverte en clair. Un mot de passe qui voyage en clair est\n' "$GRAS" "$FIN"
+  printf '         un mot de passe public.\n'
+  printf '  %bferme%b  rien d'"'"'ouvert ; accès par tunnel SSH, donc pas depuis un\n' "$GRAS" "$FIN"
+  printf '         téléphone.\n'
+  read -r -p "  Quel accès ? [https/http/ferme] (Entrée = ferme) " reponse
+  case "${reponse,,}" in
+    http)  MODE="http" ;;
+    ferme|fermé|"") MODE="ferme" ;;
+    *)     MODE="https" ;;
+  esac
 fi
 
-if [[ "$PUBLIC" == "oui" ]]; then
-  BIND_ODOO="0.0.0.0"
-  avert "l'interface sera joignable depuis Internet, sans HTTPS."
-  info  "Le service d'installation, lui, reste sur 127.0.0.1."
-else
-  BIND_ODOO="127.0.0.1"
-  ok "aucun port ouvert — accès par tunnel SSH."
-fi
+BIND_ODOO="127.0.0.1"
+PROFILS=(--profile installateur)
+ODOO_OPTIONS=""
+
+case "$MODE" in
+  https)
+    # Sans nom de domaine, aucune autorité ne peut délivrer de certificat.
+    # sslip.io résout n'importe quelle adresse écrite dans le nom : rien à
+    # acheter, rien à configurer chez un registraire. Un vrai domaine reste
+    # préférable — il survit à un changement d'adresse, pas celui-ci.
+    if [[ -z "$DOMAINE" ]]; then
+      [[ -n "$adresse" ]] || fatal "adresse IP introuvable : préciser --domaine."
+      DOMAINE="${adresse//./-}.sslip.io"
+      info "aucun domaine fourni : « $DOMAINE » (dérivé de l'adresse)."
+    fi
+    for port in 80 443; do
+      if ss -ltn 2>/dev/null | grep -q ":$port "; then
+        fatal "le port $port est déjà pris ; la passerelle ne pourra pas l'ouvrir."
+      fi
+    done
+    PROFILS+=(--profile passerelle)
+    # Derrière la passerelle seulement : sur une instance directement exposée,
+    # cette option ferait confiance à des en-têtes falsifiables.
+    ODOO_OPTIONS="--proxy-mode"
+    ok "HTTPS sur https://$DOMAINE — Odoo reste inaccessible en direct."
+    ;;
+  http)
+    BIND_ODOO="0.0.0.0"
+    avert "l'interface sera joignable en clair, sans chiffrement."
+    info  "Le service d'installation, lui, reste sur 127.0.0.1."
+    ;;
+  *)
+    ok "aucun port ouvert — accès par tunnel SSH."
+    ;;
+esac
 
 # docker compose lit ce fichier tout seul : les réglages survivent à un
 # redémarrage et à un « docker compose up » lancé à la main.
@@ -178,6 +227,9 @@ umask 077
   echo "BIND_ODOO=$BIND_ODOO"
   echo "INSTALLATEUR_CLE_API=$INSTALLATEUR_CLE_API"
   echo "ODOO_ADMIN_MOTDEPASSE=$ODOO_ADMIN_MOTDEPASSE"
+  echo "ODOO_OPTIONS=$ODOO_OPTIONS"
+  [[ -n "$DOMAINE" ]] && echo "ATELIER_DOMAINE=$DOMAINE"
+  [[ -n "$COURRIEL" ]] && echo "ATELIER_COURRIEL=$COURRIEL"
 } > .env
 chmod 600 .env
 
@@ -186,7 +238,7 @@ chmod 600 .env
 titre "5. Démarrage de la pile"
 
 info "construction et démarrage — quelques minutes au premier passage…"
-if ! $DOCKER compose --profile installateur up -d --build >/tmp/atelier-demarrage.log 2>&1; then
+if ! $DOCKER compose "${PROFILS[@]}" up -d --build >/tmp/atelier-demarrage.log 2>&1; then
   tail -20 /tmp/atelier-demarrage.log
   fatal "le démarrage a échoué. Journal complet : /tmp/atelier-demarrage.log"
 fi
@@ -218,7 +270,7 @@ printf "%s\n" \
     >/tmp/atelier-motdepasse.log 2>&1 && ok "mot de passe administrateur posé" \
     || avert "mot de passe inchangé — voir /tmp/atelier-motdepasse.log"
 
-$DOCKER compose --profile installateur up -d >/dev/null 2>&1
+$DOCKER compose "${PROFILS[@]}" up -d >/dev/null 2>&1
 
 # ------------------------------------------------------------ vérification
 
@@ -252,20 +304,48 @@ else
   avert "connexion administrateur impossible — voir /tmp/atelier-motdepasse.log"
 fi
 
+# Le certificat s'obtient auprès d'une autorité qui doit joindre cette machine
+# sur le port 80. Beaucoup de choses peuvent l'en empêcher — pare-feu de
+# l'hébergeur, nom qui ne pointe pas ici, port déjà pris. Annoncer une adresse
+# HTTPS sans avoir vérifié qu'elle répond ferait perdre le temps qu'on croit
+# gagner.
+if [[ "$MODE" == "https" ]]; then
+  info "attente du certificat pour $DOMAINE — jusqu'à une minute…"
+  obtenu=0
+  for _ in $(seq 1 30); do
+    if curl -sS -o /dev/null --max-time 5 "https://$DOMAINE/web/login" 2>/dev/null; then
+      obtenu=1; break
+    fi
+    sleep 2
+  done
+  if [[ "$obtenu" == "1" ]]; then
+    ok "https://$DOMAINE répond, certificat valide"
+  else
+    avert "https://$DOMAINE ne répond pas encore."
+    info  "Causes usuelles : le port 80 n'est pas ouvert côté hébergeur, ou le"
+    info  "nom ne pointe pas vers ${adresse:-cette machine}."
+    info  "Journal : $DOCKER compose logs passerelle"
+  fi
+fi
+
 # ---------------------------------------------------------------- suite
 
 titre "C'est prêt"
 
-adresse=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)
-[[ -n "$adresse" ]] || adresse=$(hostname -I 2>/dev/null | awk '{print $1}')
-
-if [[ "$PUBLIC" == "oui" ]]; then
+if [[ "$MODE" == "https" ]]; then
+  printf '  %bLe back-office :%b https://%s\n\n' "$GRAS" "$FIN" "$DOMAINE"
+  printf '      identifiant   admin\n'
+  printf '      mot de passe  %s\n\n' "$ODOO_ADMIN_MOTDEPASSE"
+  printf '  Notez ce mot de passe : il n'"'"'est réaffiché nulle part.\n'
+  printf '  Le certificat est obtenu et renouvelé tout seul. Odoo n'"'"'est plus\n'
+  printf '  joignable en direct : tout passe par la passerelle.\n\n'
+elif [[ "$MODE" == "http" ]]; then
   printf '  %bLe back-office :%b http://%s:8069\n\n' "$GRAS" "$FIN" "${adresse:-<ip-du-serveur>}"
   printf '      identifiant   admin\n'
   printf '      mot de passe  %s\n\n' "$ODOO_ADMIN_MOTDEPASSE"
   printf '  Notez ce mot de passe : il n'"'"'est réaffiché nulle part.\n'
-  printf '  La liaison est en HTTP, sans certificat — bon pour un atelier,\n'
-  printf '  pas pour des données réelles. Le HTTPS viendra avec le proxy.\n\n'
+  printf '  %bEn clair, sans certificat.%b Pour chiffrer : rejouer avec --https\n' "$JAUNE" "$FIN"
+  printf '  (ou --domaine mon.domaine.fr si vous en avez un).\n\n'
 else
   printf '  L'"'"'Atelier tourne, et n'"'"'est joignable que depuis cette machine.\n\n'
   printf '  %bDepuis votre poste%b, ouvrez un tunnel puis allez sur http://localhost:8069\n' "$GRAS" "$FIN"

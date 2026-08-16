@@ -27,6 +27,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Derrière la passerelle, Odoo doit savoir qu'il l'est : sans « proxy-mode »
+    # il fabrique ses URL en http:// et prend l'adresse du proxy pour celle du
+    # visiteur. L'option n'est PAS mise par défaut : activée sur une instance
+    # directement exposée, elle ferait confiance à des en-têtes que n'importe
+    # qui pourrait forger. deployer/installer.sh la pose avec la passerelle.
+    command: odoo ${ODOO_OPTIONS:-}
     ports:
       # N'écoute que sur la machine elle-même. Sur un serveur avec une IP
       # publique, « 8069:8069 » exposerait Odoo à Internet ; il faut alors un
@@ -80,7 +86,37 @@ services:
       - ./:/mnt/extra-addons:ro
     restart: unless-stopped
 
+  # Passerelle HTTPS. Sous profil : « docker compose up » ne la démarre pas.
+  #
+  #   ATELIER_DOMAINE=atelier.exemple.fr \
+  #     docker compose --profile passerelle up -d
+  #
+  # Elle est le seul service à publier des ports sur l'extérieur. Quand elle
+  # tourne, Odoo n'a plus à être joignable directement : laisser BIND_ODOO sur
+  # 127.0.0.1 revient à n'exposer que du HTTPS.
+  passerelle:
+    image: caddy:2-alpine
+    profiles: ["passerelle"]
+    depends_on:
+      - odoo
+    environment:
+      ATELIER_DOMAINE: ${ATELIER_DOMAINE:-localhost}
+      ATELIER_COURRIEL: ${ATELIER_COURRIEL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./.docker/passerelle/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Les certificats vivent ici. Sans ce volume, chaque recréation du
+      # conteneur en redemanderait — et Let's Encrypt limite le nombre de
+      # demandes par domaine et par semaine.
+      - passerelle-data:/data
+      - passerelle-config:/config
+    restart: unless-stopped
+
 volumes:
   odoo-db:
   odoo-data:
   addons-installes:
+  passerelle-data:
+  passerelle-config:
