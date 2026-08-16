@@ -23,7 +23,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
-VERT='\033[32m'; ROUGE='\033[31m'; GRAS='\033[1m'; FIN='\033[0m'
+VERT='\033[32m'; ROUGE='\033[31m'; JAUNE='\033[33m'; GRAS='\033[1m'; FIN='\033[0m'
 titre() { printf '\n%b=== %s%b\n' "$GRAS" "$*" "$FIN"; }
 ECHECS=0
 controle() {
@@ -52,10 +52,16 @@ trap nettoyer EXIT
 
 titre "Étape 1 — La configuration est lisible par Caddy"
 
-docker run --rm -v "$PWD/.docker/passerelle/Caddyfile:/etc/caddy/Caddyfile:ro" \
-  -e ATELIER_DOMAINE=localhost caddy:2-alpine \
+# « docker compose run » et non « docker run » : la validation doit voir
+# EXACTEMENT l'environnement du service. Passer les variables à la main en
+# validait une autre — celle où ATELIER_ACME_EMAIL est absente plutôt que
+# vide — et la recette déclarait valide une configuration sur laquelle Caddy
+# refusait ensuite de démarrer. Six contrôles échouaient plus loin pour une
+# faute que celui-ci aurait dû nommer.
+docker compose --profile passerelle run --rm --no-deps passerelle \
   caddy validate --config /etc/caddy/Caddyfile >/tmp/caddy-validate.log 2>&1
-controle $? "Le Caddyfile est valide." "$(tail -3 /tmp/caddy-validate.log)"
+controle $? "Le Caddyfile est valide dans l'environnement du service." \
+  "$(grep -i error /tmp/caddy-validate.log | head -2)"
 
 # --------------------------------------------------------------- 2. montée
 
@@ -69,6 +75,17 @@ docker compose run --rm odoo odoo -d ansut -i base --stop-after-init \
   --log-level=warn >/tmp/passerelle-base.log 2>&1
 controle $? "La base « ansut » est créée." "$(tail -5 /tmp/passerelle-base.log)"
 docker compose --profile passerelle --profile installateur up -d >/dev/null 2>&1
+
+# « up -d » rend 0 dès que les conteneurs sont créés — un service qui redémarre
+# en boucle passe donc ce contrôle sans broncher. C'est ce qui est arrivé :
+# Caddy refusait sa configuration et repartait toutes les deux secondes, et
+# rien ne l'a dit avant six échecs plus loin. On regarde donc l'état, un peu
+# après, quand un redémarrage en boucle a eu le temps de se voir.
+sleep 12
+etat=$(docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | grep '^passerelle ')
+grep -q "running" <<<"$etat"
+controle $? "La passerelle tourne, et ne redémarre pas en boucle." \
+  "état : ${etat:-absente} ; $(docker compose logs --tail=3 passerelle 2>&1 | grep -i error | head -1)"
 
 # Caddy fabrique son autorité interne au premier démarrage ; elle n'existe pas
 # encore à la seconde zéro.
@@ -92,14 +109,26 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 [[ "$reponse" == "200" ]]
-controle $? "https://localhost/web/login répond 200, certificat validé." \
+TLS_REPOND=$?
+controle $TLS_REPOND "https://localhost/web/login répond 200, certificat validé." \
   "code=$reponse ; $(tail -2 /tmp/curl-tls.log)"
 
 # Le contrôle qui donne son sens au précédent : sans la racine, la connexion
 # doit être refusée. Si elle passe, c'est que le certificat n'est pas vérifié.
-curl -sS -o /dev/null --max-time 5 https://localhost/web/login >/dev/null 2>&1
-[[ $? -ne 0 ]]
-controle $? "Sans l'autorité, la connexion est refusée (le TLS est réel)."
+#
+# Mais il ne vaut QUE si le serveur répond par ailleurs : passerelle éteinte,
+# la connexion échoue aussi, et ce contrôle passait au vert en ne prouvant
+# rien. C'est exactement ce qui s'est produit — un contrôle qui réussit quand
+# le serveur est mort est un contrôle qui mentira le jour où ça compte.
+if [[ "$TLS_REPOND" -ne 0 ]]; then
+  printf '  %bSANS OBJET%b Sans l'"'"'autorité, la connexion est refusée — '\
+'indécidable tant que la passerelle ne répond pas.\n' "$JAUNE" "$FIN"
+  ECHECS=$((ECHECS + 1))
+else
+  curl -sS -o /dev/null --max-time 5 https://localhost/web/login >/dev/null 2>&1
+  [[ $? -ne 0 ]]
+  controle $? "Sans l'autorité, la connexion est refusée (le TLS est réel)."
+fi
 
 entetes=$(curl -sS --cacert "$RACINE" --resolve "localhost:443:127.0.0.1" \
   -D - -o /dev/null --max-time 5 https://localhost/web/login 2>/dev/null)

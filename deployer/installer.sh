@@ -229,7 +229,9 @@ umask 077
   echo "ODOO_ADMIN_MOTDEPASSE=$ODOO_ADMIN_MOTDEPASSE"
   echo "ODOO_OPTIONS=$ODOO_OPTIONS"
   [[ -n "$DOMAINE" ]] && echo "ATELIER_DOMAINE=$DOMAINE"
-  [[ -n "$COURRIEL" ]] && echo "ATELIER_COURRIEL=$COURRIEL"
+  # Directive complète, ou rien : « email » sans argument empêche Caddy
+  # de démarrer, et une variable définie mais vide ne prend aucun défaut.
+  [[ -n "$COURRIEL" ]] && echo "ATELIER_ACME_EMAIL=email $COURRIEL"
 } > .env
 chmod 600 .env
 

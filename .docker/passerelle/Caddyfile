@@ -16,7 +16,12 @@
 # en recette, sans dépendre de Let's Encrypt ni d'un nom public.
 
 {
-	email {$ATELIER_COURRIEL:atelier@example.invalid}
+	# La directive entière vit dans la variable, et non son seul argument :
+	# « {$VAR:défaut} » ne prend son défaut que si la variable est ABSENTE.
+	# Définie et vide — ce que fait docker compose — elle laissait « email »
+	# sans argument, et Caddy refusait de démarrer en boucle.
+	# Vaut soit rien, soit « email quelquun@exemple.fr ».
+	{$ATELIER_ACME_EMAIL}
 	# La passerelle n'expose rien d'elle-même : pas d'API d'administration.
 	admin off
 }

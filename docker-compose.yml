@@ -101,7 +101,8 @@ services:
       - odoo
     environment:
       ATELIER_DOMAINE: ${ATELIER_DOMAINE:-localhost}
-      ATELIER_COURRIEL: ${ATELIER_COURRIEL:-}
+      # Directive complète, pas seulement une adresse : voir le Caddyfile.
+      ATELIER_ACME_EMAIL: ${ATELIER_ACME_EMAIL:-}
     ports:
       - "80:80"
       - "443:443"
