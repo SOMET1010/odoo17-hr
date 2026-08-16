@@ -19,7 +19,12 @@ import sys
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
+from ai.diagnostic import Constat, VARIABLE, verifier_etapes  # noqa: E402
 from ai.provider import fournisseur_configure  # noqa: E402
+from ai.routeur import (  # noqa: E402
+    ConfigurationInvalide, RouterProvider, _construire, chemin_configuration,
+    charger_configuration,
+)
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import (  # noqa: E402
     ErreurInstallation, OdooInstallClient, empaqueter,
@@ -29,7 +34,7 @@ from spec.drafter import RedactionImpossible, SpecDrafter  # noqa: E402
 from spec.module_spec import ModuleSpec, SpecInvalide  # noqa: E402
 from validator.odoo_static_validator import OdooStaticValidator  # noqa: E402
 
-VERT, ROUGE, GRAS, FIN = "\033[32m", "\033[31m", "\033[1m", "\033[0m"
+VERT, ROUGE, JAUNE, GRAS, FIN = "\033[32m", "\033[31m", "\033[33m", "\033[1m", "\033[0m"
 
 
 def journal(message: str) -> None:
@@ -138,6 +143,53 @@ def commande_build(args) -> int:
     return 1
 
 
+def commande_providers(args) -> int:
+    """Diagnostique chaque fournisseur, sans rien générer."""
+    try:
+        chemin = chemin_configuration()
+        donnee = charger_configuration(chemin)
+    except ConfigurationInvalide as erreur:
+        print(f"{ROUGE}{erreur}{FIN}")
+        print("  Copier routeur.example.json en routeur.json, puis l'adapter.")
+        return 2
+
+    print(f"{GRAS}Routeur : {chemin}{FIN}\n")
+
+    constats: list[Constat] = []
+    etapes = []
+    for entree in donnee.get("fournisseurs", []):
+        nom = entree.get("nom", "sans-nom")
+        try:
+            etapes.append(_construire(entree))
+        except ConfigurationInvalide as erreur:
+            # Non configuré n'est pas en échec : c'est le cas normal d'une
+            # machine qui n'a pas toutes les clés.
+            constats.append(Constat(nom, False, VARIABLE, str(erreur)))
+
+    constats = verifier_etapes(etapes, journal) + constats
+
+    print()
+    utilisables = [c for c in constats if c.ok]
+    for constat in constats:
+        if constat.ok:
+            marque = f"{VERT}OK{FIN}   "
+        elif constat.transitoire:
+            marque = f"{JAUNE}PANNE{FIN}"
+        elif constat.cause == VARIABLE:
+            marque = f"{JAUNE}ABSENT{FIN}"
+        else:
+            marque = f"{ROUGE}ÉCHEC{FIN}"
+        print(f"  {marque} {constat.ligne()}")
+
+    print()
+    if utilisables:
+        print(f"{VERT}{len(utilisables)} fournisseur(s) opérationnel(s) : "
+              f"{', '.join(c.nom for c in utilisables)}.{FIN}")
+        return 0
+    print(f"{ROUGE}Aucun fournisseur opérationnel.{FIN}")
+    return 1
+
+
 def principal(argv=None) -> int:
     analyseur = argparse.ArgumentParser(prog="atelier-odoo", description=__doc__)
     sous = analyseur.add_subparsers(dest="commande", required=True)
@@ -164,6 +216,15 @@ def principal(argv=None) -> int:
     )
     build.add_argument("--tentatives", type=int, default=3, help="réparations maximales")
     build.set_defaults(fonction=commande_build)
+
+    fournisseurs = sous.add_parser(
+        "providers", help="diagnostique les fournisseurs du routeur"
+    )
+    fournisseurs.add_argument(
+        "action", nargs="?", default="check", choices=["check"],
+        help="check : vérifie variable, point d'entrée, authentification, modèle",
+    )
+    fournisseurs.set_defaults(fonction=commande_providers)
 
     args = analyseur.parse_args(argv)
     try:

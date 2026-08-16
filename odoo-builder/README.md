@@ -96,6 +96,33 @@ d'environnement qui la porte, et le Builder **refuse** toute entrée où figure
 un champ `cle`, `api_key`, `token` ou `key` — un test le vérifie. Le fichier
 reste donc versionnable.
 
+### Diagnostiquer avant de fabriquer
+
+```bash
+python3 cli/atelier_odoo.py providers check
+```
+
+Vérifie chaque fournisseur **sans rien générer** : variable d'environnement,
+point d'entrée joignable, authentification, nom du modèle, format de réponse.
+La sonde emprunte le chemin réel — le même `completer_json` que le rédacteur —
+sans quoi elle ne prouverait rien.
+
+Elle sépare surtout des causes qui se ressemblent toutes de l'extérieur :
+
+| Verdict | Ce que ça veut dire |
+|---|---|
+| `OK` | opérationnel |
+| `ÉCHEC … nom du modèle` | le modèle n'existe pas chez ce fournisseur |
+| `ÉCHEC … authentification` | clé invalide ou révoquée |
+| `ÉCHEC … point d'entrée` | URL erronée ou service absent |
+| `PANNE … quota` | configuration correcte, service momentanément indisponible |
+| `ABSENT … non configuré` | clé non définie sur cette machine — cas normal |
+
+Sans ce diagnostic, un nom de modèle erroné, une clé invalide et une URL mal
+recopiée produisent tous « le Builder ne marche pas ». Le code HTTP seul ne
+suffit pas à les distinguer : un 404 vaut aussi bien pour une URL que pour un
+modèle, d'où la lecture du corps de la réponse.
+
 **Ce sur quoi le routeur bascule, et ce sur quoi il ne bascule pas.** Il bascule
 sur une *panne* : réseau, 5xx, quota, délai, réponse illisible. Il ne bascule
 pas quand un fournisseur répond correctement mais que la spécification est

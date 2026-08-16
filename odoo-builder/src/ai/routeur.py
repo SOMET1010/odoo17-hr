@@ -157,12 +157,23 @@ def routeur_depuis_config(
     return RouterProvider(etapes=etapes, journal=journal)
 
 
-def routeur_depuis_fichier(chemin: str, journal=print) -> RouterProvider:
+def chemin_configuration() -> str:
+    """Le fichier de routeur en vigueur : celui désigné, sinon celui du Builder."""
+    return os.environ.get("BUILDER_IA_ROUTEUR") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "routeur.json",
+    )
+
+
+def charger_configuration(chemin: str) -> dict:
     try:
         with open(chemin, encoding="utf-8") as f:
-            donnee = json.load(f)
+            return json.load(f)
     except FileNotFoundError:
         raise ConfigurationInvalide(f"configuration introuvable : {chemin}")
     except json.JSONDecodeError as erreur:
         raise ConfigurationInvalide(f"JSON invalide dans {chemin} : {erreur}")
-    return routeur_depuis_config(donnee, journal)
+
+
+def routeur_depuis_fichier(chemin: str, journal=print) -> RouterProvider:
+    return routeur_depuis_config(charger_configuration(chemin), journal)

@@ -20,7 +20,34 @@ from abc import ABC, abstractmethod
 
 
 class ErreurFournisseur(Exception):
-    """Le fournisseur est indisponible ou rend une réponse inexploitable."""
+    """Le fournisseur est indisponible ou rend une réponse inexploitable.
+
+    Porte le code HTTP et le corps de la réponse quand ils existent : c'est ce
+    qui permet au diagnostic de distinguer un mauvais nom de modèle d'une clé
+    invalide ou d'un point d'entrée erroné — trois causes qui, sans cela, se
+    ressemblent toutes.
+    """
+
+    def __init__(self, message: str, code: int | None = None, corps: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.corps = corps
+
+
+def _corps_erreur(erreur) -> str:
+    """Le corps d'une réponse en erreur, tronqué. Les API y nomment la cause."""
+    try:
+        brut = erreur.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+    try:
+        charge = json.loads(brut)
+        detail = charge.get("error")
+        if isinstance(detail, dict):
+            return str(detail.get("message") or detail)[:400]
+        return str(detail or charge)[:400]
+    except json.JSONDecodeError:
+        return brut[:400]
 
 
 class AIProvider(ABC):
@@ -77,9 +104,13 @@ class OpenAIProvider(AIProvider):
             with urllib.request.urlopen(requete, timeout=self.delai) as reponse:
                 donnee = json.loads(reponse.read().decode("utf-8"))
         except urllib.error.HTTPError as erreur:
-            raise ErreurFournisseur(f"OpenAI a répondu {erreur.code} : {erreur.reason}")
+            corps = _corps_erreur(erreur)
+            raise ErreurFournisseur(
+                f"{erreur.code} {erreur.reason}" + (f" — {corps}" if corps else ""),
+                code=erreur.code, corps=corps,
+            )
         except urllib.error.URLError as erreur:
-            raise ErreurFournisseur(f"OpenAI injoignable : {erreur.reason}")
+            raise ErreurFournisseur(f"point d'entrée injoignable : {erreur.reason}")
 
         try:
             texte = donnee["choices"][0]["message"]["content"]
@@ -131,9 +162,13 @@ class AnthropicProvider(AIProvider):
             with urllib.request.urlopen(requete, timeout=self.delai) as reponse:
                 donnee = json.loads(reponse.read().decode("utf-8"))
         except urllib.error.HTTPError as erreur:
-            raise ErreurFournisseur(f"Anthropic a répondu {erreur.code} : {erreur.reason}")
+            corps = _corps_erreur(erreur)
+            raise ErreurFournisseur(
+                f"{erreur.code} {erreur.reason}" + (f" — {corps}" if corps else ""),
+                code=erreur.code, corps=corps,
+            )
         except urllib.error.URLError as erreur:
-            raise ErreurFournisseur(f"Anthropic injoignable : {erreur.reason}")
+            raise ErreurFournisseur(f"point d'entrée injoignable : {erreur.reason}")
 
         try:
             texte = "".join(
@@ -180,12 +215,11 @@ def fournisseur_configure(journal=None) -> AIProvider | None:
     BUILDER_IA_ROUTEUR — prend le pas sur la configuration à fournisseur
     unique. Il n'est pas obligatoire : sans lui, rien ne change.
     """
-    from ai.routeur import ConfigurationInvalide, routeur_depuis_fichier  # noqa: PLC0415
-
-    chemin = os.environ.get("BUILDER_IA_ROUTEUR") or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "routeur.json",
+    from ai.routeur import (  # noqa: PLC0415
+        ConfigurationInvalide, chemin_configuration, routeur_depuis_fichier,
     )
+
+    chemin = chemin_configuration()
     if os.path.isfile(chemin):
         try:
             return routeur_depuis_fichier(chemin, journal or (lambda _: None))

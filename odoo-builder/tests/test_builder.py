@@ -843,3 +843,71 @@ class TestExtractionJson(unittest.TestCase):
     def test_le_protocole_anthropic_exige_une_cle(self):
         with self.assertRaises(ErreurFournisseur):
             AnthropicProvider(cle_api="").completer_json("c", "x")
+
+
+# --------------------------------------------------------------- diagnostic
+
+from ai.diagnostic import (  # noqa: E402
+    AUTH, ENDPOINT, MODELE, PROTOCOLE, QUOTA, VARIABLE, Constat, verifier,
+)
+
+
+class FournisseurQuiEchoue(AIProvider):
+    def __init__(self, code=None, corps=""):
+        self.code, self.corps = code, corps
+
+    def completer_json(self, consigne, contexte):
+        raise ErreurFournisseur("échec simulé", code=self.code, corps=self.corps)
+
+
+class TestDiagnostic(unittest.TestCase):
+    """Un mauvais nom de modèle ne doit pas ressembler à un défaut du Builder."""
+
+    def test_fournisseur_operationnel(self):
+        constat = verifier("bon", FournisseurQuiRepond({"ok": True}))
+        self.assertTrue(constat.ok)
+
+    def test_cle_invalide_reconnue(self):
+        for code in (401, 403):
+            constat = verifier("x", FournisseurQuiEchoue(code))
+            self.assertEqual(constat.cause, AUTH)
+            self.assertFalse(constat.transitoire)
+
+    def test_modele_inconnu_distingue_du_point_d_entree(self):
+        """Le corps de la réponse nomme la cause ; le code seul ne suffit pas."""
+        modele = verifier("x", FournisseurQuiEchoue(404, "The model `xyz` does not exist"))
+        self.assertEqual(modele.cause, MODELE)
+        endpoint = verifier("x", FournisseurQuiEchoue(404, "Not Found"))
+        self.assertEqual(endpoint.cause, ENDPOINT)
+
+    def test_modele_inconnu_sur_400_aussi(self):
+        constat = verifier("x", FournisseurQuiEchoue(400, "unknown model name"))
+        self.assertEqual(constat.cause, MODELE)
+
+    def test_point_d_entree_injoignable(self):
+        constat = verifier("x", FournisseurQuiEchoue(None))
+        self.assertEqual(constat.cause, ENDPOINT)
+
+    def test_quota_et_panne_sont_transitoires(self):
+        """Rien à corriger dans le fichier : la configuration est bonne."""
+        self.assertTrue(verifier("x", FournisseurQuiEchoue(429)).transitoire)
+        self.assertTrue(verifier("x", FournisseurQuiEchoue(503)).transitoire)
+        self.assertEqual(verifier("x", FournisseurQuiEchoue(429)).cause, QUOTA)
+
+    def test_reponse_non_json_signalee_comme_protocole(self):
+        class Bavard(AIProvider):
+            def completer_json(self, consigne, contexte):
+                return "je ne suis pas un objet"
+
+        self.assertEqual(verifier("x", Bavard()).cause, PROTOCOLE)
+
+    def test_une_cle_absente_n_est_pas_presentee_comme_un_defaut(self):
+        ligne = Constat("local", False, VARIABLE, "LOCAL_LLM_KEY n'est pas définie").ligne()
+        self.assertIn("non configuré", ligne)
+        self.assertNotIn("à corriger", ligne)
+
+    def test_la_sonde_emprunte_le_chemin_reel(self):
+        """Un diagnostic qui passerait ailleurs ne prouverait rien."""
+        temoin = FournisseurQuiRepond({"ok": True})
+        verifier("x", temoin)
+        self.assertEqual(temoin.appels, 1)
