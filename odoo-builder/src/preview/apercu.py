@@ -25,6 +25,7 @@ promet pas le pixel.
 
 from __future__ import annotations
 
+import json as _j
 from html import escape
 
 from spec.module_spec import ModuleSpec, Modele, Vue
@@ -47,6 +48,10 @@ EXEMPLES = {
     "date": "12/03/2026", "datetime": "12/03/2026 09:30",
     "html": "Texte mis en forme…",
 }
+
+
+def _json(valeur) -> str:
+    return _j.dumps(valeur, ensure_ascii=False)
 
 
 def _echapper(valeur) -> str:
@@ -146,41 +151,60 @@ class Apercu:
     # ------------------------------------------------------------- formulaire
 
     def formulaire(self, modele: Modele, vue: Vue | None) -> str:
+        """Un formulaire QU'ON PEUT REMPLIR.
+
+        Les champs se saisissent, les calculs se refont à chaque frappe, les
+        contraintes se déclenchent, les boutons de transition refusent ce
+        qu'ils doivent refuser. C'est la différence entre valider une capture
+        et valider un comportement — et c'est le comportement qui coûte cher
+        à corriger après fabrication.
+        """
         champs = {c.name: c for c in modele.tous_les_champs}
         noms = [n for n in (vue.fields if vue and vue.fields else list(champs))
                 if n in champs]
+        for nom in champs:                       # jamais perdre un champ du modèle
+            if nom not in noms:
+                noms.append(nom)
         cycle = modele.lifecycle
 
         entete = ""
         if cycle and cycle.states:
             boutons = "".join(
-                f'<button type="button" class="bouton">{_echapper(t.label)}</button>'
+                f'<button type="button" class="bouton" '
+                f'data-transition="{_echapper(t.name)}">{_echapper(t.label)}</button>'
                 for t in cycle.transitions
             )
             etapes = "".join(
-                f'<span class="etape{" active" if i == 0 else ""}">{_echapper(e.label)}</span>'
-                for i, e in enumerate(cycle.states)
+                f'<span class="etape" data-etat="{_echapper(e.value)}">'
+                f"{_echapper(e.label)}</span>"
+                for e in cycle.states
             )
-            entete = (f'<div class="entete-form"><div class="boutons">{boutons}</div>'
+            entete = (f'<div class="entete-form"><div class="boutons">{boutons}'
+                      f'<button type="button" class="bouton fantome" '
+                      f'data-role="remise">Nouveau</button></div>'
                       f'<div class="barre-etat">{etapes}</div></div>')
+        else:
+            entete = ('<div class="entete-form"><div class="boutons">'
+                      '<button type="button" class="bouton fantome" '
+                      'data-role="remise">Nouveau</button></div></div>')
 
         lignes = []
         for nom in noms:
             champ = champs[nom]
             if champ.type in ("one2many", "many2many"):
-                continue                      # rendus à part, en tableau
-            marques = []
+                continue
+            if cycle and champ.name == cycle.field_name:
+                continue                         # déjà dans la barre d'état
+            marques = ""
             if champ.required:
-                marques.append('<span class="obligatoire" title="obligatoire">*</span>')
-            if champ.readonly or champ.est_calcule:
-                marques.append('<span class="calcule">calculé</span>'
-                               if champ.est_calcule else
-                               '<span class="calcule">lecture seule</span>')
+                marques += '<span class="obligatoire" title="obligatoire">*</span>'
+            if champ.est_calcule:
+                marques += '<span class="calcule">calculé</span>'
+            elif champ.readonly:
+                marques += '<span class="calcule">lecture seule</span>'
             lignes.append(
-                f'<div class="ligne"><label>{_echapper(champ.string)}'
-                f'{"".join(marques)}</label>'
-                f'<div class="saisie t-{champ.type}">{self._saisie(champ)}'
-                f'<span class="genre">{APPARENCE.get(champ.type, champ.type)}</span></div></div>'
+                f'<div class="ligne"><label>{_echapper(champ.string)}{marques}</label>'
+                f'<div class="saisie">{self._saisie(champ)}</div></div>'
             )
 
         tableaux = ""
@@ -189,43 +213,65 @@ class Apercu:
             if champ.type not in ("one2many", "many2many"):
                 continue
             enfant = next((m for m in self.spec.models if m.name == champ.comodel), None)
-            colonnes = ([c.string for c in enfant.tous_les_champs[:4]] if enfant
-                        else ["Référence", "Valeur"])
-            entetes = "".join(f"<th>{_echapper(c)}</th>" for c in colonnes)
-            corps = "".join(
-                "<tr>" + "".join(f'<td class="doux">…</td>' for _ in colonnes) + "</tr>"
-                for _ in range(2)
-            )
+            colonnes = [
+                {"nom": c.name, "type": c.type, "libelle": c.string}
+                for c in (enfant.tous_les_champs if enfant else [])
+                if c.name != (champ.inverse_name or "") and not c.est_calcule
+            ][:4]
+            if not colonnes:
+                colonnes = [{"nom": "name", "type": "char", "libelle": "Référence"}]
+            json_colonnes = _echapper(_json(colonnes))
+            entetes = "".join(f'<th>{_echapper(c["libelle"])}</th>' for c in colonnes)
             tableaux += (
                 f'<div class="sous-tableau"><h4>{_echapper(champ.string)}'
                 f'<span class="genre">{_echapper(champ.comodel)}</span></h4>'
                 f'<div class="defile"><table class="liste">'
-                f"<thead><tr>{entetes}</tr></thead><tbody>{corps}</tbody></table></div>"
-                f'<button type="button" class="ajouter">Ajouter une ligne</button></div>'
+                f"<thead><tr>{entetes}<th></th></tr></thead>"
+                f'<tbody data-lignes="{_echapper(champ.name)}" '
+                f'data-colonnes="{json_colonnes}"></tbody></table></div>'
+                f'<button type="button" class="ajouter" '
+                f'data-ajouter="{_echapper(champ.name)}" '
+                f'data-colonnes="{json_colonnes}">Ajouter une ligne</button></div>'
             )
 
-        return (f'<div class="form">{entete}'
+        journal = ('<div class="journal"><p class="titre-journal">Ce qui se passe</p>'
+                   '<ul data-role="journal"></ul></div>')
+
+        return (f'<div class="form" data-modele="{_echapper(modele.name)}">{entete}'
+                f'<p class="alerte" data-role="alerte" hidden></p>'
                 f'<div class="feuille"><div class="grille">{"".join(lignes)}</div>'
-                f"{tableaux}</div></div>")
+                f"{tableaux}</div>{journal}</div>")
 
     def _saisie(self, champ) -> str:
+        """Un contrôle réellement manipulable, ou une valeur en lecture."""
+        nom = _echapper(champ.name)
+        if champ.est_calcule or champ.readonly:
+            return (f'<span class="controle fige" data-lecture="{nom}">—</span>'
+                    f'<span class="genre">{APPARENCE.get(champ.type, champ.type)}</span>')
         if champ.type == "selection" and champ.selection:
-            defaut = champ.default or champ.selection[0][0]
-            libelle = dict(champ.selection).get(defaut, champ.selection[0][1])
-            return f'<span class="controle deroulant">{_echapper(libelle)} ▾</span>'
+            options = "".join(
+                f'<option value="{_echapper(v)}">{_echapper(l)}</option>'
+                for v, l in champ.selection
+            )
+            return f'<select data-saisie="{nom}">{options}</select>'
         if champ.type == "boolean":
-            coche = "✓" if champ.default else ""
-            return f'<span class="case">{coche}</span>'
+            return f'<input type="checkbox" data-saisie="{nom}">'
+        if champ.type in ("integer", "float", "monetary"):
+            pas = 'step="1"' if champ.type == "integer" else 'step="any"'
+            return (f'<input type="number" {pas} data-saisie="{nom}" placeholder="0">'
+                    f'<span class="genre">{APPARENCE[champ.type]}</span>')
+        if champ.type == "date":
+            return f'<input type="date" data-saisie="{nom}">'
+        if champ.type == "datetime":
+            return f'<input type="datetime-local" data-saisie="{nom}">'
+        if champ.type in ("text", "html"):
+            return f'<textarea rows="2" data-saisie="{nom}"></textarea>'
         if champ.type == "many2one":
-            return f'<span class="controle lien">{_echapper(champ.comodel)} …</span>'
+            return (f'<input type="text" data-saisie="{nom}" '
+                    f'placeholder="{_echapper(champ.comodel)}…">')
         if champ.type in ("binary", "image"):
             return '<span class="controle">Choisir un fichier…</span>'
-        if champ.est_calcule:
-            return '<span class="controle fige">calculé automatiquement</span>'
-        exemple = EXEMPLES.get(champ.type, "")
-        if champ.default is not None and champ.type not in ("boolean",):
-            exemple = str(champ.default)
-        return f'<span class="controle">{_echapper(exemple)}</span>'
+        return f'<input type="text" data-saisie="{nom}">'
 
     # ------------------------------------------------------------------ droits
 

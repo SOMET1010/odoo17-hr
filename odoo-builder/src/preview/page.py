@@ -15,6 +15,8 @@ from __future__ import annotations
 from html import escape
 
 from preview.apercu import Apercu
+from preview.interface import LIAISON
+from preview.simulateur import script
 from spec.module_spec import ModuleSpec
 
 STYLE = """
@@ -115,6 +117,36 @@ ul.menus .cible,.rubrique{font-size:.72rem;color:var(--doux);font-family:var(--m
 .avis h3{color:var(--alerte)}
 footer{border-top:1px solid var(--trait);padding-top:20px;color:var(--doux);
        font-size:.8rem;display:flex;flex-direction:column;gap:5px}
+input,select,textarea{font-family:inherit;font-size:.87rem;color:var(--encre);
+  background:transparent;border:0;border-bottom:1px solid var(--trait);
+  padding:2px 0;width:100%;max-width:220px;border-radius:0}
+input:focus,select:focus,textarea:focus{outline:0;border-bottom-color:var(--violet);
+  box-shadow:0 1px 0 var(--violet)}
+input[type=checkbox]{width:16px;height:16px;accent-color:var(--violet)}
+select{max-width:220px}
+textarea{resize:vertical}
+.bouton:not(:disabled){cursor:pointer}
+.bouton:disabled{opacity:.35;cursor:not-allowed}
+.bouton.fantome{background:transparent;color:var(--violet);
+  border:1px solid var(--violet)}
+.alerte{margin:0;padding:9px 16px;background:#FBECEA;color:#8E2F26;
+  font-size:.83rem;border-bottom:1px solid var(--trait)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .alerte{
+  background:#2E1A18;color:#EFA9A1}}
+:root[data-theme="dark"] .alerte{background:#2E1A18;color:#EFA9A1}
+.cellule{max-width:none;font-size:.83rem}
+.oter{background:none;border:0;color:var(--doux);cursor:pointer;font-size:1rem;
+  line-height:1;padding:0 4px}
+.ajouter{cursor:pointer}
+.journal{border-top:1px solid var(--trait);padding:12px 20px 16px;
+  background:var(--violet-clair)}
+.titre-journal{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--doux);margin-bottom:6px}
+.journal ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.journal li{font-size:.8rem;font-family:var(--mono)}
+.journal li.ok{color:var(--ok)} .journal li.refus{color:#B0392F}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .journal li.refus{color:#EFA9A1}}
+:root[data-theme="dark"] .journal li.refus{color:#EFA9A1}
 code{font-family:var(--mono);font-size:.85em;background:var(--violet-clair);
      padding:1px 5px;border-radius:2px}
 """
@@ -180,13 +212,15 @@ def rendre(spec: ModuleSpec, titre: str | None = None) -> str:
 {droits}
   <div class="avis">
     <h3>Ce que cet aperçu montre, et ce qu'il ne montre pas</h3>
-    <p class="chapeau">Il est dérivé de la spécification que le générateur lit pour
-      écrire le module : les champs, leur ordre, leur type, les colonnes, les boutons
-      et les états sont ceux que vous aurez. Les valeurs affichées sont des exemples.</p>
-    <p class="chapeau">Ce n'est pas une capture d'Odoo : Odoo ajoute ses propres
-      éléments — discussion, pièces jointes, barre supérieure — et sa mise en page
-      dépend de la largeur et du thème. On montre la structure de l'écran, qui est ce
-      qu'il y a à valider.</p>
+    <p class="chapeau">Les formulaires ci-dessus sont <strong>jouables</strong> : remplissez-les,
+      ajoutez des lignes, cliquez les boutons. Les champs calculés se recalculent, les
+      contraintes bloquent, et une transition refuse ce qu'elle doit refuser. Le calcul joué
+      ici et le calcul installé dans Odoo descendent de la même expression, traduite une fois
+      en Python et une fois en JavaScript — ils ne peuvent pas diverger.</p>
+    <p class="chapeau">Ce n'est pas Odoo : rien n'est enregistré, aucune donnée ne persiste
+      d'un rechargement à l'autre, aucun droit n'est réellement vérifié, et Odoo ajoute ses
+      propres éléments — discussion, pièces jointes, barre supérieure. On joue ce que la
+      spécification décrit, ce qui est exactement le périmètre à valider avant fabrication.</p>
   </div>
   <footer>
     <p>{len(spec.models)} objet(s) · {sum(len(m.fields) for m in spec.models)} champ(s)
@@ -194,4 +228,8 @@ def rendre(spec: ModuleSpec, titre: str | None = None) -> str:
     <p>Rendu déterministe depuis la spécification. Aucun modèle de langage n'intervient.</p>
   </footer>
 </div>
+<script>
+{script(spec)}
+{LIAISON}
+</script>
 """

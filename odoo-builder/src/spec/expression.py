@@ -21,6 +21,7 @@ vérifier qu'un `@api.depends` déclaré est complet.
 from __future__ import annotations
 
 import ast
+import json
 
 # Fonctions d'agrégation admises sur un chemin relationnel.
 AGREGATS = {"sum", "count", "min", "max", "avg", "any", "all"}
@@ -125,10 +126,41 @@ class Expression:
     # ------------------------------------------------------------ traduction
 
     def en_python(self) -> str:
+        self._cible = "python"
         return self._rendre(self._arbre.body)
+
+    def en_javascript(self) -> str:
+        """La même expression, pour l'aperçu jouable.
+
+        DEUX SORTIES, UN SEUL ANALYSEUR. C'est l'invariant qui rend l'aperçu
+        digne de confiance : le Python installé dans Odoo et le JavaScript
+        joué dans la page descendent du MÊME arbre, contrôlé par la même
+        liste blanche. Écrire un second interpréteur à la main l'aurait fait
+        diverger — et un aperçu qui calcule autrement que le module livré est
+        pire qu'aucun aperçu, puisqu'il fait valider un comportement qu'on ne
+        livrera pas.
+
+        Les différences ci-dessous sont des différences de LANGAGE, jamais de
+        sémantique : « and » s'écrit « && », l'exponentiation « ** », et une
+        moyenne se protège de la division par zéro des deux côtés.
+        """
+        self._cible = "javascript"
+        return self._rendre(self._arbre.body)
+
+    @property
+    def _js(self) -> bool:
+        return getattr(self, "_cible", "python") == "javascript"
 
     def _rendre(self, noeud) -> str:
         if isinstance(noeud, ast.Constant):
+            if self._js:
+                if noeud.value is True:
+                    return "true"
+                if noeud.value is False:
+                    return "false"
+                if noeud.value is None:
+                    return "null"
+                return json.dumps(noeud.value)
             return repr(noeud.value)
 
         if isinstance(noeud, ast.Name):
@@ -148,14 +180,35 @@ class Expression:
             )
 
         if isinstance(noeud, ast.UnaryOp):
-            symbole = {ast.USub: "-", ast.UAdd: "+", ast.Not: "not "}[type(noeud.op)]
+            symbole = ({ast.USub: "-", ast.UAdd: "+", ast.Not: "!"} if self._js
+                       else {ast.USub: "-", ast.UAdd: "+", ast.Not: "not "})[type(noeud.op)]
             return f"({symbole}{self._rendre(noeud.operand)})"
 
         if isinstance(noeud, ast.BoolOp):
-            liant = " and " if isinstance(noeud.op, ast.And) else " or "
+            if self._js:
+                liant = " && " if isinstance(noeud.op, ast.And) else " || "
+            else:
+                liant = " and " if isinstance(noeud.op, ast.And) else " or "
             return "(" + liant.join(self._rendre(v) for v in noeud.values) + ")"
 
         if isinstance(noeud, ast.Compare):
+            if self._js:
+                # « x in [a, b] » n'a pas d'équivalent direct : JavaScript
+                # utilise includes(), et l'ordre des opérandes s'inverse.
+                gauche = self._rendre(noeud.left)
+                morceaux = []
+                for operateur, droite in zip(noeud.ops, noeud.comparators):
+                    rendu_droite = self._rendre(droite)
+                    if isinstance(operateur, ast.In):
+                        morceaux.append(f"{rendu_droite}.includes({gauche})")
+                    elif isinstance(operateur, ast.NotIn):
+                        morceaux.append(f"!{rendu_droite}.includes({gauche})")
+                    else:
+                        morceaux.append(
+                            f"{gauche} {self._operateur(operateur)} {rendu_droite}"
+                        )
+                    gauche = rendu_droite
+                return "(" + " && ".join(morceaux) + ")"
             morceaux = [self._rendre(noeud.left)]
             for operateur, droite in zip(noeud.ops, noeud.comparators):
                 morceaux.append(self._operateur(operateur))
@@ -163,6 +216,9 @@ class Expression:
             return "(" + " ".join(morceaux) + ")"
 
         if isinstance(noeud, ast.IfExp):
+            if self._js:
+                return (f"({self._rendre(noeud.test)} ? {self._rendre(noeud.body)}"
+                        f" : {self._rendre(noeud.orelse)})")
             return (
                 f"({self._rendre(noeud.body)} if {self._rendre(noeud.test)} "
                 f"else {self._rendre(noeud.orelse)})"
@@ -170,6 +226,8 @@ class Expression:
 
         if isinstance(noeud, (ast.List, ast.Tuple)):
             elements = ", ".join(self._rendre(e) for e in noeud.elts)
+            if self._js:
+                return f"[{elements}]"
             return f"[{elements}]" if isinstance(noeud, ast.List) else f"({elements})"
 
         raise ExpressionInvalide(  # pragma: no cover - filtré en amont
@@ -187,13 +245,20 @@ class Expression:
             if isinstance(argument, ast.Attribute):
                 chemin = self._chemin_texte(argument)
                 relation, _, champ = chemin.rpartition(".")
-                cible = f"{self.variable}.{relation}.mapped('{champ}')"
+                cible = (f"A.extraire({self.variable}.{relation}, {champ!r})" if self._js
+                         else f"{self.variable}.{relation}.mapped('{champ}')")
             elif isinstance(argument, ast.Name):
                 cible = f"{self.variable}.{argument.id}"
             else:
                 raise ExpressionInvalide(
                     f"« {self.source} » : {nom}() n'accepte qu'un chemin de champs."
                 )
+            if self._js:
+                # Les agrégats vivent dans un objet « A » fourni par le
+                # simulateur : les écrire en ligne ici disperserait la même
+                # règle dans chaque expression, et la division par zéro de la
+                # moyenne y serait oubliée une fois sur deux.
+                return f"A.{nom}({cible})"
             if nom == "count":
                 return f"len({cible})"
             if nom == "avg":
@@ -203,6 +268,8 @@ class Expression:
             return f"{nom}({cible})"
 
         arguments = ", ".join(self._rendre(a) for a in noeud.args)
+        if self._js:
+            return f"A.{nom}({arguments})"
         return f"{nom}({arguments})"
 
     def _chemin_texte(self, noeud: ast.Attribute) -> str:
@@ -218,8 +285,13 @@ class Expression:
         morceaux.append(courant.id)
         return ".".join(reversed(morceaux))
 
-    @staticmethod
-    def _operateur(operateur) -> str:
+    def _operateur(self, operateur) -> str:
+        if self._js:
+            # « // » et « ** » n'existent pas tels quels ; le reste coïncide.
+            if isinstance(operateur, ast.FloorDiv):
+                return "/*plancher*/"
+            if isinstance(operateur, ast.Pow):
+                return "**"
         return {
             ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
             ast.Mod: "%", ast.Pow: "**", ast.FloorDiv: "//",
