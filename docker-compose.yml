@@ -28,9 +28,13 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8069:8069"
+      # N'écoute que sur la machine elle-même. Sur un serveur avec une IP
+      # publique, « 8069:8069 » exposerait Odoo à Internet ; ici il faut un
+      # tunnel SSH ou un proxy inverse devant, ce qui est le comportement
+      # voulu. BIND_ADRESSE permet de l'ouvrir sciemment.
+      - "${BIND_ADRESSE:-127.0.0.1}:8069:8069"
       # Communication temps réel (chatter, notifications)
-      - "8072:8072"
+      - "${BIND_ADRESSE:-127.0.0.1}:8072:8072"
     volumes:
       # Filestore et sessions : sans ce volume, les pièces jointes et la
       # session sont perdues à chaque recréation du conteneur.
@@ -63,7 +67,9 @@ services:
       ODOO_MOTDEPASSE: admin
       TAILLE_MAX_MO: "20"
     ports:
-      - "8090:8090"
+      # Le service d'installation installe du code : il ne doit jamais être
+      # joignable depuis l'extérieur de la machine.
+      - "${BIND_ADRESSE:-127.0.0.1}:8090:8090"
     volumes:
       - addons-installes:/mnt/addons-installes
       # Les sources Git en lecture seule : sert uniquement à refuser
