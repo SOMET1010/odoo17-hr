@@ -30,6 +30,26 @@ Le modèle n'écrit jamais un fichier Odoo et n'est jamais responsable d'un
 invariant. Sa correction repasse par le générateur et le validateur : une
 réparation ne peut donc pas contourner les contrôles.
 
+## Installation
+
+Une seule commande, qui pose trois questions et fait le reste :
+
+```bash
+python3 cli/atelier_odoo.py setup
+```
+
+Elle demande le service d'IA, la clé — **jamais affichée pendant la saisie** —
+et le modèle. Puis elle écrit les secrets dans `~/.config/atelier-odoo/env` en
+`0600`, écrit `routeur.json` **sans aucune clé**, compose elle-même le secret
+du service d'installation, et vérifie immédiatement que le fournisseur répond.
+
+Elle **refuse** d'écrire un secret dans le dépôt, quel que soit l'emplacement
+demandé. Aux sessions suivantes, une seule ligne :
+
+```bash
+source ~/.config/atelier-odoo/env
+```
+
 ## Usage
 
 ```bash

@@ -20,6 +20,10 @@ RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(RACINE, "src"))
 
 from ai.diagnostic import Constat, VARIABLE, verifier_etapes  # noqa: E402
+from ai.installation import (  # noqa: E402
+    FOURNISSEURS, InstallationImpossible, chemin_secrets, ecrire_routeur,
+    ecrire_secrets, secret_installateur,
+)
 from ai.provider import fournisseur_configure  # noqa: E402
 from ai.routeur import (  # noqa: E402
     ConfigurationInvalide, RouterProvider, _construire, chemin_configuration,
@@ -143,6 +147,78 @@ def commande_build(args) -> int:
     return 1
 
 
+def commande_setup(args) -> int:
+    """Installation guidée : pose les questions, écrit les fichiers, vérifie."""
+    import getpass  # noqa: PLC0415
+
+    depot = RACINE
+    print(f"{GRAS}Installation de l'Atelier Odoo{FIN}")
+    print("Trois questions, puis je m'occupe du reste.\n")
+
+    # --- 1. Quel fournisseur.
+    print(f"{GRAS}1. Quel service d'IA rédigera les spécifications ?{FIN}")
+    cles = list(FOURNISSEURS)
+    for rang, cle in enumerate(cles, 1):
+        print(f"   {rang}. {FOURNISSEURS[cle]['libelle']}")
+    choix = input(f"   Votre choix [1-{len(cles)}] : ").strip() or "1"
+    try:
+        fournisseur = cles[int(choix) - 1]
+    except (ValueError, IndexError):
+        print(f"{ROUGE}Choix invalide.{FIN}")
+        return 2
+    details = FOURNISSEURS[fournisseur]
+
+    # --- 2. La clé, jamais affichée.
+    print(f"\n{GRAS}2. Votre clé d'API {details['libelle']}{FIN}")
+    print("   Elle ne s'affichera pas pendant la saisie, et n'entrera")
+    print("   ni dans le dépôt ni dans l'historique du terminal.")
+    cle_api = getpass.getpass("   Clé : ").strip()
+    if not cle_api:
+        print(f"{ROUGE}Aucune clé saisie.{FIN}")
+        return 2
+
+    # --- 3. Le modèle.
+    suggere = details["modele_suggere"]
+    print(f"\n{GRAS}3. Quel modèle ?{FIN}")
+    print(f"   Entrée pour « {suggere} », ou saisissez le nom exact.")
+    modele = input("   Modèle : ").strip() or suggere
+
+    # --- Écriture.
+    print(f"\n{GRAS}Écriture{FIN}")
+    installateur_secret = secret_installateur()
+    try:
+        fichier_secrets = ecrire_secrets(
+            {details["cle_env"]: cle_api, "INSTALLATEUR_CLE_API": installateur_secret},
+            depot,
+        )
+    except InstallationImpossible as erreur:
+        print(f"{ROUGE}{erreur}{FIN}")
+        return 2
+    print(f"  secrets   → {fichier_secrets} (lisible par vous seul)")
+
+    fichier_routeur = ecrire_routeur(
+        [(fournisseur, modele)], os.path.join(depot, "routeur.json")
+    )
+    print(f"  routeur   → {fichier_routeur} (sans aucune clé)")
+    print(f"  secret du service d'installation : composé automatiquement")
+
+    # --- Vérification immédiate, dans le même processus.
+    print(f"\n{GRAS}Vérification{FIN}")
+    os.environ[details["cle_env"]] = cle_api
+    os.environ["INSTALLATEUR_CLE_API"] = installateur_secret
+    code = commande_providers(args)
+
+    print()
+    if code == 0:
+        print(f"{VERT}Installation terminée.{FIN}")
+        print("  À chaque nouvelle session, une seule ligne à jouer :")
+        print(f"    source {fichier_secrets}")
+    else:
+        print(f"{ROUGE}La configuration est écrite mais le service ne répond pas.{FIN}")
+        print("  Le diagnostic ci-dessus dit sur quoi porte le problème.")
+    return code
+
+
 def commande_providers(args) -> int:
     """Diagnostique chaque fournisseur, sans rien générer."""
     try:
@@ -225,6 +301,11 @@ def principal(argv=None) -> int:
         help="check : vérifie variable, point d'entrée, authentification, modèle",
     )
     fournisseurs.set_defaults(fonction=commande_providers)
+
+    setup = sous.add_parser(
+        "setup", help="installation guidée : clé, routeur, vérification"
+    )
+    setup.set_defaults(fonction=commande_setup, action="check")
 
     args = analyseur.parse_args(argv)
     try:

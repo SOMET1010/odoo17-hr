@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import unittest
 import zipfile
 
@@ -973,3 +974,81 @@ class TestTraceDuRouteur(unittest.TestCase):
             self.assertNotIn(secrete, "\n".join(routeur.incidents))
         finally:
             os.environ.pop("CLE_POUR_TRACE", None)
+
+
+# ------------------------------------------------------------- installation
+
+import shutil as _shutil  # noqa: E402
+
+from ai.installation import (  # noqa: E402
+    FOURNISSEURS, InstallationImpossible, ecrire_routeur, ecrire_secrets,
+    secret_installateur,
+)
+
+
+class TestInstallationGuidee(unittest.TestCase):
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.addCleanup(_shutil.rmtree, self.dossier, True)
+        self.ancien = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(self.dossier, "config")
+
+    def tearDown(self):
+        if self.ancien is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self.ancien
+
+    def test_les_secrets_sont_ecrits_hors_du_depot(self):
+        depot = os.path.join(self.dossier, "depot")
+        os.makedirs(depot)
+        chemin = ecrire_secrets({"MA_CLE": "sk-secrete"}, depot)
+        self.assertFalse(chemin.startswith(os.path.abspath(depot)))
+
+    def test_les_secrets_ne_sont_lisibles_que_par_leur_proprietaire(self):
+        depot = os.path.join(self.dossier, "depot")
+        os.makedirs(depot)
+        chemin = ecrire_secrets({"MA_CLE": "sk-secrete"}, depot)
+        self.assertEqual(oct(os.stat(chemin).st_mode)[-3:], "600")
+
+    def test_refus_d_ecrire_des_secrets_dans_le_depot(self):
+        depot = os.path.join(self.dossier, "depot")
+        os.makedirs(depot)
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(depot, "config")
+        with self.assertRaises(InstallationImpossible):
+            ecrire_secrets({"MA_CLE": "sk-secrete"}, depot)
+
+    def test_le_routeur_ecrit_ne_contient_aucune_cle(self):
+        chemin = os.path.join(self.dossier, "routeur.json")
+        ecrire_routeur([("kimi", "kimi-k3")], chemin)
+        brut = open(chemin, encoding="utf-8").read()
+        self.assertNotIn("sk-", brut)
+        donnee = json.loads(brut)
+        entree = donnee["fournisseurs"][0]
+        self.assertEqual(entree["cle_env"], "KIMI_API_KEY")
+        for interdit in ("cle", "api_key", "token", "key"):
+            self.assertNotIn(interdit, entree)
+
+    def test_le_routeur_ecrit_est_accepte_par_le_routeur(self):
+        """Ce que l'installation écrit doit être relisible sans retouche."""
+        chemin = os.path.join(self.dossier, "routeur.json")
+        ecrire_routeur([("kimi", "kimi-k3")], chemin)
+        os.environ["KIMI_API_KEY"] = "cle-de-test"
+        try:
+            routeur = routeur_depuis_config(
+                json.load(open(chemin, encoding="utf-8")), journal=lambda _: None
+            )
+            self.assertEqual(routeur.noms, ["kimi"])
+        finally:
+            os.environ.pop("KIMI_API_KEY", None)
+
+    def test_le_secret_du_service_est_compose_par_l_outil(self):
+        """Aucune raison de demander à l'utilisateur d'inventer une chaîne."""
+        a, b = secret_installateur(), secret_installateur()
+        self.assertNotEqual(a, b)
+        self.assertGreaterEqual(len(a), 32)
+
+    def test_chaque_fournisseur_propose_a_un_nom_de_variable(self):
+        for cle, details in FOURNISSEURS.items():
+            self.assertTrue(details["cle_env"], cle)
+            self.assertIn(details["protocole"], ("openai", "anthropic"))
