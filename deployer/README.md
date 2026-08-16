@@ -78,6 +78,22 @@ Le gestionnaire de bases d'Odoo, qui permet de supprimer une base depuis un
 navigateur, est lui **désactivé** (`list_db = False`) plutôt que protégé par un
 mot de passe.
 
+## Jouer le test d'acceptation
+
+C'est le seul maillon qu'aucun test automatique ne couvre : l'appel réel au
+modèle, qui transforme un besoin écrit en français en module Odoo installé et
+exécuté.
+
+```bash
+bash deployer/acceptation.sh          # lance et rend la main aussitôt
+bash deployer/acceptation.sh --voir   # affiche le résultat
+```
+
+Le test se détache de la session qui l'a lancé (`setsid`) : une coupure de la
+liaison ne l'interrompt plus, et le résultat se relit par une connexion courte.
+Sur un lien instable, c'est la différence entre un test qui aboutit et un test
+qu'on relance indéfiniment.
+
 ## Ce que le script ne fait pas
 
 - **Pas de HTTPS ni de proxy inverse.** C'est le chantier suivant, celui du
