@@ -359,12 +359,27 @@ def commande_providers(args) -> int:
         print(f"  {marque} {constat.ligne()}")
 
     print()
-    if utilisables:
-        print(f"{VERT}{len(utilisables)} fournisseur(s) opérationnel(s) : "
-              f"{', '.join(c.nom for c in utilisables)}.{FIN}")
-        return 0
-    print(f"{ROUGE}Aucun fournisseur opérationnel.{FIN}")
-    return 1
+    if not utilisables:
+        print(f"{ROUGE}Aucun fournisseur opérationnel.{FIN}")
+        return 1
+
+    print(f"{VERT}{len(utilisables)} fournisseur(s) opérationnel(s) : "
+          f"{', '.join(c.nom for c in utilisables)}.{FIN}")
+
+    # Un fournisseur déclaré mais inutilisable n'est pas un secours : c'est une
+    # illusion de secours. Tant que le premier répond, personne ne s'en aperçoit
+    # — et le jour où il tombe, le routeur bascule vers rien. « --exigeant » le
+    # fait dire tout de suite, avant d'en avoir besoin.
+    if getattr(args, "exigeant", False):
+        casses = [c for c in constats if not c.ok and c.cause != VARIABLE
+                  and not c.transitoire]
+        if casses:
+            print(f"\n{ROUGE}Secours illusoire : {len(casses)} fournisseur(s) "
+                  f"déclaré(s) mais inutilisable(s).{FIN}")
+            for constat in casses:
+                print(f"  - {constat.ligne()}")
+            return 1
+    return 0
 
 
 def principal(argv=None) -> int:
@@ -405,6 +420,11 @@ def principal(argv=None) -> int:
     fournisseurs.add_argument(
         "--adopter", action="store_true",
         help="detect : enregistre le fournisseur trouvé au lieu de l'afficher",
+    )
+    fournisseurs.add_argument(
+        "--exigeant", action="store_true",
+        help="check : échoue si un fournisseur déclaré est inutilisable, même "
+             "quand un autre répond",
     )
     fournisseurs.set_defaults(fonction=commande_providers)
 

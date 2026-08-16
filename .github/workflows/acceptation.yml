@@ -98,8 +98,16 @@ jobs:
           echo "--- contenu (aucune clé, seulement des noms de variables) ---"
           cat odoo-builder/routeur.json
 
+      # « --exigeant » quand un routeur est écrit : un secours qu'on n'exerce
+      # jamais peut être cassé sans qu'on le sache, et le jour où le premier
+      # fournisseur tombe, le routeur bascule vers rien.
       - name: Diagnostiquer les fournisseurs
-        run: python3 odoo-builder/cli/atelier_odoo.py providers check
+        run: |
+          if [ -f odoo-builder/routeur.json ]; then
+            python3 odoo-builder/cli/atelier_odoo.py providers check --exigeant
+          else
+            python3 odoo-builder/cli/atelier_odoo.py providers check
+          fi
 
       # « set -o pipefail » n'est pas un détail : sans lui, le tube rend le code
       # de sortie de « tee », toujours nul, et un job vert affiche un verdict
@@ -110,8 +118,10 @@ jobs:
           set -o pipefail
           python3 odoo-builder/cli/acceptation.py | tee /tmp/acceptation.log
 
-      - name: Journaux, quoi qu'il arrive
-        if: always()
+      # Seulement en cas d'échec : quand tout passe, ces 150 lignes ne servent
+      # qu'à enterrer le verdict.
+      - name: Journaux des conteneurs, en cas d'échec
+        if: failure()
         run: |
           echo "===== odoo ====="
           docker compose logs --tail=120 odoo || true

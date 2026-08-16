@@ -865,7 +865,8 @@ class TestExtractionJson(unittest.TestCase):
 # --------------------------------------------------------------- diagnostic
 
 from ai.diagnostic import (  # noqa: E402
-    AUTH, ENDPOINT, MODELE, PROTOCOLE, QUOTA, VARIABLE, Constat, verifier,
+    AUTH, ENDPOINT, INDISPONIBLE, MODELE, PROTOCOLE, QUOTA, VARIABLE, Constat,
+    verifier,
 )
 
 
@@ -1611,3 +1612,80 @@ class TestValeursDuBancDEssai(unittest.TestCase):
             RuntimeSimule(existants={"res.currency"}), spec, modele
         )
         self.assertNotIn("total", valeurs)
+
+
+class TestSecoursIllusoire(unittest.TestCase):
+    """Un fournisseur déclaré mais inutilisable n'est pas un secours.
+
+    Tant que le premier répond, personne ne s'en aperçoit ; le jour où il
+    tombe, le routeur bascule vers rien. « --exigeant » le fait dire avant
+    d'en avoir besoin, plutôt qu'au pire moment.
+    """
+
+    class Args:
+        def __init__(self, exigeant=False):
+            self.action = "check"
+            self.exigeant = exigeant
+            self.adopter = False
+
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.ancien_routeur = os.environ.get("BUILDER_IA_ROUTEUR")
+        self.chemin = os.path.join(self.dossier, "routeur.json")
+        os.environ["BUILDER_IA_ROUTEUR"] = self.chemin
+        ecrire_routeur([("kimi", "kimi-k3"), ("openai", "gpt-4o")], self.chemin)
+        for nom in ("KIMI_API_KEY", "OPENAI_API_KEY"):
+            os.environ[nom] = "cle-de-test"
+        self.vrai = atelier_odoo.verifier_etapes
+
+    def tearDown(self):
+        atelier_odoo.verifier_etapes = self.vrai
+        for nom in ("KIMI_API_KEY", "OPENAI_API_KEY"):
+            os.environ.pop(nom, None)
+        if self.ancien_routeur is None:
+            os.environ.pop("BUILDER_IA_ROUTEUR", None)
+        else:
+            os.environ["BUILDER_IA_ROUTEUR"] = self.ancien_routeur
+
+    def _repondre(self, par_nom):
+        def faux(etapes, journal=None):
+            return [par_nom[e.nom] for e in etapes]
+        atelier_odoo.verifier_etapes = faux
+
+    def test_un_modele_inconnu_chez_le_secours_fait_echouer(self):
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", False, MODELE, "le modèle n'existe pas"),
+        })
+        sortie = io.StringIO()
+        with contextlib.redirect_stdout(sortie):
+            code = atelier_odoo.commande_providers(self.Args(exigeant=True))
+        self.assertEqual(code, 1)
+        self.assertIn("Secours illusoire", sortie.getvalue())
+
+    def test_sans_exigence_le_meme_cas_passe(self):
+        """Le comportement par défaut ne change pas : un fournisseur suffit."""
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", False, MODELE, "le modèle n'existe pas"),
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(atelier_odoo.commande_providers(self.Args()), 0)
+
+    def test_une_panne_passagere_n_est_pas_un_secours_casse(self):
+        """Un 503 se répare tout seul ; rien à corriger dans la configuration."""
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", False, INDISPONIBLE, "503", transitoire=True),
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = atelier_odoo.commande_providers(self.Args(exigeant=True))
+        self.assertEqual(code, 0)
+
+    def test_deux_fournisseurs_sains_passent(self):
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", True, OK),
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(atelier_odoo.commande_providers(self.Args(exigeant=True)), 0)
