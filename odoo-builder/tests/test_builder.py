@@ -2473,3 +2473,82 @@ class TestConversionNeCasseRienEnAval(unittest.TestCase):
         spec.valider()
         self.assertEqual([v.type for v in spec.views], [])
         self.assertIn("type « gantt »", " | ".join(m.quoi for m in rapport.manques))
+
+
+class TestAtelierLocal(unittest.TestCase):
+    """L'Atelier assemble la chaîne ; ces contrôles tiennent ses invariants.
+
+    Ce ne sont pas des contrôles d'affichage : ils portent sur les trois
+    promesses qui font qu'on peut confier un besoin à cet outil — la clé reste
+    au serveur, le modèle n'écrit que de la spécification, et rien n'est
+    montré qui n'ait passé le validateur.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        import atelier
+        self.module = atelier
+        self.atelier = atelier.Atelier()
+
+    def test_la_page_ne_contient_aucune_valeur_de_cle(self):
+        """La page nomme les variables d'environnement ; elle ne les lit pas.
+
+        Nommer « BUILDER_IA_CLE » aide l'utilisateur à démarrer. En livrer la
+        valeur mettrait une clé d'API dans le presse-papier de quiconque
+        ouvre le code source de la page.
+        """
+        from interface_web import PAGE
+        for temoin in ("sk-", "BUILDER_IA_CLE=", "OPENAI_API_KEY="):
+            self.assertNotIn(temoin, PAGE, f"« {temoin} » ne doit pas figurer")
+        # Le NOM, lui, doit y être : sans lui, personne ne sait quoi définir.
+        self.assertIn("BUILDER_IA_CLE", PAGE)
+
+    def test_rien_n_est_retenu_qui_ne_valide_pas(self):
+        """Montrer une spécification invalide reviendrait à la faire approuver."""
+        with self.assertRaises(SpecInvalide):
+            self.atelier.charger({"technical_name": "x", "name": "X",
+                                  "models": [{"name": "mauvais nom"}]}, "17.0")
+        self.assertIsNone(self.atelier.spec)
+
+    def test_une_conversion_alimente_l_apercu_et_l_archive(self):
+        origine = ModuleSpec.depuis_dict({
+            "technical_name": "atelier_boucle", "name": "Boucle",
+            "cible": "17.0",
+            "models": [{"name": "boucle.chose", "description": "Chose",
+                        "fields": [{"name": "name", "type": "char",
+                                    "string": "Nom", "required": True}]}],
+            "views": [{"model": "boucle.chose", "type": "form", "name": "Chose",
+                       "fields": ["name"]}],
+            "access": [{"model": "boucle.chose"}],
+        })
+        with tempfile.TemporaryDirectory() as dossier:
+            racine = _ecrire_module(dossier, OdooModuleGenerator().generate(origine))
+            resume = self.atelier.convertir(racine, "19.0")
+
+        self.assertEqual(resume["cible"], "19.0")
+        self.assertTrue(resume["valide"])
+        self.assertIn("conversion", resume)
+
+        apercu = self.atelier.apercu().decode("utf-8")
+        self.assertIn("data-modele=\"boucle.chose\"", apercu)
+        self.assertNotIn("eval(", apercu)
+
+        with zipfile.ZipFile(io.BytesIO(self.atelier.archive())) as z:
+            noms = z.namelist()
+            self.assertIn("atelier_boucle/__manifest__.py", noms)
+            manifeste = z.read("atelier_boucle/__manifest__.py").decode("utf-8")
+        self.assertIn("'19.0.1.0.0'", manifeste)
+
+    def test_concevoir_sans_fournisseur_dit_quoi_faire(self):
+        """Un outil qui ne peut pas travailler doit dire pourquoi, pas échouer."""
+        garde = {c: os.environ.pop(c, None) for c in
+                 ("BUILDER_IA_CLE", "OPENAI_API_KEY", "KIMI_API_KEY", "ANTHROPIC_API_KEY")}
+        try:
+            with self.assertRaises(RuntimeError) as boite:
+                self.atelier.concevoir("un besoin quelconque assez long", "17.0")
+            self.assertIn("BUILDER_IA_CLE", str(boite.exception))
+            self.assertIn("jamais dans le navigateur", str(boite.exception))
+        finally:
+            for cle, valeur in garde.items():
+                if valeur is not None:
+                    os.environ[cle] = valeur
