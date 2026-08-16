@@ -2,5 +2,9 @@
 # passe administrateur d'Odoo et le secret du service d'installation.
 .env
 
+# Configuration locale du routeur de fournisseurs. Elle ne contient jamais de
+# clé — seulement des noms de variables — mais elle décrit une machine donnée.
+odoo-builder/routeur.json
+
 __pycache__/
 *.pyc

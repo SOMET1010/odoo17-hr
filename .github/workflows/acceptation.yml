@@ -28,9 +28,14 @@ jobs:
     timeout-minutes: 40
     env:
       INSTALLATEUR_CLE_API: cle-de-recette-jetable
+      # Fournisseur unique, utilisé quand aucun routeur n'est écrit.
       BUILDER_IA_CLE: ${{ secrets.BUILDER_IA_CLE }}
       BUILDER_IA_URL: ${{ vars.BUILDER_IA_URL || 'https://api.moonshot.ai/v1/chat/completions' }}
       BUILDER_IA_MODELE: ${{ vars.BUILDER_IA_MODELE || 'kimi-k3' }}
+      # Clés nommées par le routeur. Il ne les contient jamais : il ne cite
+      # que le nom de la variable qui les porte.
+      KIMI_API_KEY: ${{ secrets.BUILDER_IA_CLE }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +68,37 @@ jobs:
           echo "::error::Odoo n'a pas répondu."
           exit 1
 
-      - name: Diagnostiquer le fournisseur
+      # « gpt-5.6 » et « kimi-k3 » sont des noms de modèles que rien n'a jamais
+      # vérifiés. Cette étape le fait dire au service lui-même plutôt que de
+      # le supposer : si le modèle par défaut est refusé, elle imprime la liste
+      # réellement disponible sur le compte. Informatif, jamais bloquant.
+      - name: Reconnaître la clé OpenAI
+        if: env.OPENAI_API_KEY != ''
+        continue-on-error: true
+        env:
+          BUILDER_IA_CLE: ${{ secrets.OPENAI_API_KEY }}
+        run: python3 odoo-builder/cli/atelier_odoo.py providers detect
+
+      # Deux fournisseurs déclarés valent un routeur : si le premier tombe, le
+      # second prend la suite. Avec un seul, le repli sur l'environnement suffit
+      # et le routeur n'apporterait rien qu'un fichier de plus.
+      - name: Écrire le routeur, si plusieurs fournisseurs
+        if: env.OPENAI_API_KEY != ''
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "odoo-builder/src")
+          from ai.installation import ecrire_routeur
+          chemin = ecrire_routeur(
+              [("kimi", "kimi-k3"), ("openai", "gpt-4o")],
+              "odoo-builder/routeur.json",
+          )
+          print(f"routeur écrit : {chemin}")
+          PY
+          echo "--- contenu (aucune clé, seulement des noms de variables) ---"
+          cat odoo-builder/routeur.json
+
+      - name: Diagnostiquer les fournisseurs
         run: python3 odoo-builder/cli/atelier_odoo.py providers check
 
       # « set -o pipefail » n'est pas un détail : sans lui, le tube rend le code
