@@ -7,6 +7,8 @@ le modèle qui a produit la spécification.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -1052,3 +1054,90 @@ class TestInstallationGuidee(unittest.TestCase):
         for cle, details in FOURNISSEURS.items():
             self.assertTrue(details["cle_env"], cle)
             self.assertIn(details["protocole"], ("openai", "anthropic"))
+
+
+# ------------------------------------------------- diagnostic en ligne de commande
+
+sys.path.insert(0, os.path.join(RACINE, "cli"))
+import atelier_odoo  # noqa: E402
+
+
+class TestCommandeProviders(unittest.TestCase):
+    """Le diagnostic doit voir ce que le Builder utilise, pas autre chose.
+
+    Il réclamait un `routeur.json` alors que `fournisseur_configure` se rabat
+    sur l'environnement. Toute machine installée par `deployer/installer.sh` —
+    qui range la clé dans l'environnement sans écrire de fichier — se voyait
+    donc répondre « configuration introuvable » avec une clé parfaitement
+    valide.
+    """
+
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.anciennes = {
+            c: os.environ.get(c)
+            for c in ("BUILDER_IA_ROUTEUR", "BUILDER_IA_CLE", "BUILDER_IA_URL",
+                      "BUILDER_IA_MODELE", "OPENAI_API_KEY")
+        }
+        for c in self.anciennes:
+            os.environ.pop(c, None)
+        # Un chemin qui n'existe pas : le cas d'une machine sans routeur.
+        os.environ["BUILDER_IA_ROUTEUR"] = os.path.join(self.dossier, "routeur.json")
+
+        # Le diagnostic appelle le réseau ; on le remplace pour n'éprouver
+        # que la décision, et on retient ce qu'on lui a demandé de vérifier.
+        self.examinees = []
+        self.vrai_verifier = atelier_odoo.verifier_etapes
+
+        def faux_verifier(etapes, journal=None):
+            self.examinees = list(etapes)
+            return [Constat(e.nom, True, "OK") for e in etapes]
+
+        atelier_odoo.verifier_etapes = faux_verifier
+
+    def tearDown(self):
+        atelier_odoo.verifier_etapes = self.vrai_verifier
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_sans_routeur_la_cle_de_l_environnement_suffit(self):
+        os.environ["BUILDER_IA_CLE"] = "cle-de-test"
+        code = atelier_odoo.commande_providers(None)
+        self.assertEqual(code, 0)
+        self.assertEqual([e.nom for e in self.examinees], ["environnement"])
+
+    def test_sans_routeur_ni_cle_le_refus_nomme_les_deux_sources(self):
+        sortie = io.StringIO()
+        with contextlib.redirect_stdout(sortie):
+            code = atelier_odoo.commande_providers(None)
+        self.assertEqual(code, 2)
+        texte = sortie.getvalue()
+        self.assertIn("BUILDER_IA_CLE", texte)
+        self.assertIn("routeur", texte.lower())
+
+    def test_le_routeur_ecrit_prend_le_pas_sur_l_environnement(self):
+        chemin = os.environ["BUILDER_IA_ROUTEUR"]
+        ecrire_routeur([("kimi", "kimi-k3")], chemin)
+        os.environ["KIMI_API_KEY"] = "cle-de-test"
+        os.environ["BUILDER_IA_CLE"] = "autre-cle"
+        try:
+            code = atelier_odoo.commande_providers(None)
+        finally:
+            os.environ.pop("KIMI_API_KEY", None)
+        self.assertEqual(code, 0)
+        self.assertEqual([e.nom for e in self.examinees], ["kimi"])
+
+    def test_un_routeur_illisible_est_signale_et_non_contourne(self):
+        """Un fichier cassé est une erreur à corriger, pas à ignorer."""
+        chemin = os.environ["BUILDER_IA_ROUTEUR"]
+        with open(chemin, "w", encoding="utf-8") as f:
+            f.write("{ceci n'est pas du json")
+        os.environ["BUILDER_IA_CLE"] = "cle-de-test"
+        sortie = io.StringIO()
+        with contextlib.redirect_stdout(sortie):
+            code = atelier_odoo.commande_providers(None)
+        self.assertEqual(code, 2)
+        self.assertIn(chemin, sortie.getvalue())

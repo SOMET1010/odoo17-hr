@@ -24,10 +24,12 @@ from ai.installation import (  # noqa: E402
     FOURNISSEURS, InstallationImpossible, chemin_secrets, ecrire_routeur,
     ecrire_secrets, secret_installateur,
 )
-from ai.provider import fournisseur_configure  # noqa: E402
+from ai.provider import (  # noqa: E402
+    fournisseur_configure, fournisseur_depuis_environnement,
+)
 from ai.routeur import (  # noqa: E402
-    ConfigurationInvalide, RouterProvider, _construire, chemin_configuration,
-    charger_configuration,
+    ConfigurationInvalide, Etape, RouterProvider, _construire,
+    chemin_configuration, charger_configuration,
 )
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import (  # noqa: E402
@@ -220,27 +222,47 @@ def commande_setup(args) -> int:
 
 
 def commande_providers(args) -> int:
-    """Diagnostique chaque fournisseur, sans rien générer."""
-    try:
-        chemin = chemin_configuration()
-        donnee = charger_configuration(chemin)
-    except ConfigurationInvalide as erreur:
-        print(f"{ROUGE}{erreur}{FIN}")
-        print("  Copier routeur.example.json en routeur.json, puis l'adapter.")
-        return 2
+    """Diagnostique chaque fournisseur, sans rien générer.
 
-    print(f"{GRAS}Routeur : {chemin}{FIN}\n")
-
+    Le diagnostic doit examiner ce qui sert réellement. `fournisseur_configure`
+    se rabat sur l'environnement quand aucun routeur n'est écrit ; exiger ici
+    un `routeur.json` reviendrait à déclarer absente une configuration qui
+    fonctionne — ce que faisait cette commande, et qui bloquait toute machine
+    installée par `deployer/installer.sh`.
+    """
+    chemin = chemin_configuration()
     constats: list[Constat] = []
     etapes = []
-    for entree in donnee.get("fournisseurs", []):
-        nom = entree.get("nom", "sans-nom")
+
+    if os.path.isfile(chemin):
         try:
-            etapes.append(_construire(entree))
+            donnee = charger_configuration(chemin)
         except ConfigurationInvalide as erreur:
-            # Non configuré n'est pas en échec : c'est le cas normal d'une
-            # machine qui n'a pas toutes les clés.
-            constats.append(Constat(nom, False, VARIABLE, str(erreur)))
+            print(f"{ROUGE}{erreur}{FIN}")
+            print(f"  Corriger {chemin}, ou le supprimer pour repartir de "
+                  "l'environnement.")
+            return 2
+        print(f"{GRAS}Routeur : {chemin}{FIN}\n")
+        for entree in donnee.get("fournisseurs", []):
+            nom = entree.get("nom", "sans-nom")
+            try:
+                etapes.append(_construire(entree))
+            except ConfigurationInvalide as erreur:
+                # Non configuré n'est pas en échec : c'est le cas normal d'une
+                # machine qui n'a pas toutes les clés.
+                constats.append(Constat(nom, False, VARIABLE, str(erreur)))
+    else:
+        fournisseur = fournisseur_depuis_environnement()
+        if fournisseur is None:
+            print(f"{ROUGE}Aucun fournisseur configuré.{FIN}")
+            print(f"  Ni routeur dans {chemin},")
+            print("  ni BUILDER_IA_CLE ou OPENAI_API_KEY dans l'environnement.")
+            print("  Pour en déclarer un : atelier-odoo setup")
+            return 2
+        print(f"{GRAS}Fournisseur unique, décrit par l'environnement{FIN}")
+        print("  Pas de routeur : aucun secours si ce fournisseur tombe.")
+        print(f"  Pour en enchaîner plusieurs, écrire {chemin}.\n")
+        etapes.append(Etape("environnement", fournisseur))
 
     constats = verifier_etapes(etapes, journal) + constats
 
