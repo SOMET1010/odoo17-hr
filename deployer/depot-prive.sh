@@ -2,7 +2,8 @@
 #
 # Prépare le serveur à tirer depuis un dépôt privé.
 #
-#   bash deployer/depot-prive.sh
+#   bash deployer/depot-prive.sh                       ce dépôt-ci
+#   bash deployer/depot-prive.sh SOMET1010/odoo_versions  un autre
 #
 # À jouer AVANT de passer le dépôt en privé : tant qu'il est public, on peut
 # tout mettre en place et vérifier que ça marche. L'inverse — basculer puis
@@ -28,20 +29,35 @@ info()  { printf '        %s\n' "$*"; }
 avert() { printf '  %bNOTE%b  %s\n' "$JAUNE" "$FIN" "$*"; }
 fatal() { printf '  %bARRÊT%b %s\n' "$ROUGE" "$FIN" "$*"; exit 1; }
 
-CLE="$HOME/.ssh/atelier_depot"
-ALIAS="github-atelier"
-
 # ------------------------------------------------------- 1. de quel dépôt
 
 titre "1. Le dépôt"
 
-url=$(git remote get-url origin 2>/dev/null) || fatal "aucun dépôt Git ici."
-# Accepte les deux formes : https://github.com/PROPRIO/NOM(.git) et
-# git@…:PROPRIO/NOM(.git). On veut « PROPRIO/NOM ».
-chemin=$(sed -E 's#^https://[^/]+/##; s#^[^:]+:##; s#\.git$##' <<<"$url")
-[[ "$chemin" == */* ]] || fatal "impossible de lire le dépôt depuis « $url »."
+if [[ -n "${1:-}" ]]; then
+  # Un dépôt nommé : on prépare seulement sa clé, sans toucher à l'origine
+  # d'ici. GitHub veut une clé de déploiement DIFFÉRENTE par dépôt — la même
+  # ne peut pas servir deux fois, il la refuse.
+  chemin="${1%.git}"
+  [[ "$chemin" == */* ]] || fatal "attendu « PROPRIETAIRE/DEPOT », reçu « $1 »."
+  ICI=0
+  url=""
+else
+  url=$(git remote get-url origin 2>/dev/null) || fatal "aucun dépôt Git ici."
+  # Accepte les deux formes : https://github.com/PROPRIO/NOM(.git) et
+  # git@…:PROPRIO/NOM(.git). On veut « PROPRIO/NOM ».
+  chemin=$(sed -E 's#^https://[^/]+/##; s#^[^:]+:##; s#\.git$##' <<<"$url")
+  [[ "$chemin" == */* ]] || fatal "impossible de lire le dépôt depuis « $url »."
+  ICI=1
+  info "origine actuelle : $url"
+fi
+
+# Une clé par dépôt, nommée d'après lui : sans quoi la seconde écraserait la
+# première, et le premier dépôt cesserait de répondre sans qu'on comprenne.
+SUFFIXE=$(tr -c 'A-Za-z0-9' '_' <<<"$chemin" | sed 's/_*$//')
+CLE="$HOME/.ssh/atelier_$SUFFIXE"
+ALIAS="github-$SUFFIXE"
 info "dépôt : $chemin"
-info "origine actuelle : $url"
+info "clé   : $CLE"
 
 # ------------------------------------------------------ 2. la clé
 
@@ -115,20 +131,25 @@ titre "6. Vérification"
 
 nouvelle="git@$ALIAS:$chemin.git"
 ancienne="$url"
-git remote set-url origin "$nouvelle"
+[[ "$ICI" == "1" ]] && git remote set-url origin "$nouvelle"
 
-if git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
+if git ls-remote --exit-code "$nouvelle" HEAD >/dev/null 2>&1; then
   ok "le dépôt répond par la clé de déploiement"
-  info "origine : $nouvelle"
-  printf '\n  %bVous pouvez passer le dépôt en privé.%b\n' "$GRAS" "$FIN"
-  printf '  Settings → General → Danger Zone → Change visibility\n\n'
-  printf '  Ensuite, « git pull » continuera de fonctionner ici sans rien demander.\n'
+  if [[ "$ICI" == "1" ]]; then
+    info "origine : $nouvelle"
+    printf '\n  %bVous pouvez passer le dépôt en privé.%b\n' "$GRAS" "$FIN"
+    printf '  Settings → General → Danger Zone → Change visibility\n\n'
+    printf '  Ensuite, « git pull » continuera de fonctionner ici sans rien demander.\n'
+  else
+    printf '\n  Pour le cloner :\n'
+    printf '      git clone %s /opt/%s\n' "$nouvelle" "${chemin##*/}"
+  fi
 else
   # On remet l'origine d'avant : mieux vaut un serveur qui tire encore qu'un
   # serveur bloqué par une configuration à moitié faite.
-  git remote set-url origin "$ancienne"
+  [[ "$ICI" == "1" ]] && git remote set-url origin "$ancienne"
   avert "le dépôt ne répond pas encore par cette clé."
-  info  "L'origine a été remise sur $ancienne : rien n'est cassé."
+  [[ "$ICI" == "1" ]] && info "L'origine a été remise sur $ancienne : rien n'est cassé."
   info  "Causes usuelles : clé pas encore ajoutée, ou collée incomplète."
   info  "Pour voir le détail : ssh -T git@$ALIAS"
   exit 1
