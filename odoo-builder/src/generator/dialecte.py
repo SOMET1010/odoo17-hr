@@ -55,8 +55,22 @@ class Dialecte:
     def balise_liste(self) -> str:
         """« tree » jusqu'en 17, « list » à partir de 18.
 
-        Odoo 18 a renommé la balise de vue liste. Une vue « tree » y est
-        refusée au chargement — donc à l'installation du module.
+        ÉPROUVÉ à deux titres, et il faut distinguer les deux.
+
+        La recette multi-versions établit que « list » PASSE en 18 et 19, et
+        « tree » en 17 : générés, installés, mis à jour, exécutés. Elle ne dit
+        rien de plus — elle n'a jamais soumis « tree » à un Odoo 18.
+
+        Ce que « tree » y deviendrait vient des sources. Le type d'une vue est
+        le nom de sa balise racine :
+
+            values['type'] = etree.fromstring(...arch...).tag
+            (odoo/addons/base/models/ir_ui_view.py, 18.0 l. 506)
+
+        et la sélection de « ir.ui.view.type » ne comporte plus « tree » à
+        partir de 18 — seulement « list » (même fichier, l. 153). Une vue
+        « tree » y prend donc un type hors sélection : elle est refusée à
+        l'écriture, c'est-à-dire au chargement du module.
         """
         return "tree" if self.majeure < 18 else "list"
 
