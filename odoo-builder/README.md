@@ -124,11 +124,44 @@ submit: draft → submitted, si total > 0
 Un cycle de vie produit de lui-même le champ d'état, la barre de statut, et un
 bouton par transition visible depuis les seuls états d'où elle part.
 
+## Les trois invariants de sécurité
+
+Ils sont **vérifiés par des tests**, pas seulement écrits ici : une régression
+les casse dans la recette, pas en production. Ils doivent tenir lorsque
+l'interface Atelier sera branchée.
+
+| Invariant | Comment il est tenu |
+|---|---|
+| La clé reste dans l'environnement du backend | aucune option de commande ne l'accepte — elle fuirait dans l'historique et la liste des processus ; elle n'apparaît dans aucun fichier généré |
+| Le modèle n'écrit ni dans le dépôt ni dans Odoo | `AIProvider` n'expose qu'une méthode, `completer_json`, qui ne reçoit et ne rend que du texte ; le rédacteur n'importe ni `open`, ni `urllib`, ni `zipfile`, ni `subprocess` |
+| Toute reprise repasse par le même validateur | une spécification corrigée est revalidée par `ModuleSpec` puis par `OdooStaticValidator` ; aucun chemin ne les contourne |
+
+S'y ajoute un invariant du même esprit : **la génération reste en mémoire**.
+`generate()` rend un dictionnaire ; rien n'est écrit sur disque avant que la
+spécification ait passé la validation complète.
+
 ## Recettes
 
 ```bash
-python3 -m unittest discover -s tests -t .     # 48 contrôles, sans Odoo ni réseau
+python3 -m unittest discover -s tests -t .     # 57 contrôles, sans Odoo ni réseau
 ```
+
+### Le test d'acceptation, manuel
+
+Le seul maillon que les 57 contrôles ne couvrent pas est l'appel réel au
+fournisseur. Il se joue à la main, jamais en CI — dépendance réseau, coût et
+variabilité du modèle n'ont pas leur place dans un socle de non-régression.
+
+```bash
+export OPENAI_API_KEY="…"
+export INSTALLATEUR_CLE_API="…"
+docker compose --profile installateur up -d --build installateur
+python3 cli/acceptation.py
+```
+
+Il soumet le besoin des missions en français, sans retouche du JSON, et exige
+que la chaîne aille jusqu'à l'exécution : module installé, champ calculé égal à
+la somme des lignes, transition qui change l'état en base. Verdict binaire.
 
 L'installation réelle est prouvée par l'**étape 9** de
 `.docker/verifier-runtime.sh`, qui va jusqu'à l'exécution : elle installe le

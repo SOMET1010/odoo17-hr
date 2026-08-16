@@ -531,3 +531,102 @@ class TestRedaction(unittest.TestCase):
         code = fichiers["avec_comportement/models/essai_demande.py"]
         self.assertIn("@api.depends('line_ids.amount')", code)
         self.assertIn("def action_valider(self):", code)
+
+
+# ------------------------------------------------- invariants de sécurité
+
+import inspect  # noqa: E402
+
+from ai.provider import AIProvider, OpenAIProvider  # noqa: E402
+from spec.drafter import SpecDrafter as _Drafter  # noqa: E402
+
+
+class TestInvariantsDeSecurite(unittest.TestCase):
+    """Trois invariants à conserver quand l'interface sera branchée.
+
+    Ils sont vérifiés plutôt que documentés : une régression les casse ici,
+    pas en production.
+    """
+
+    # --- 1. La clé reste dans l'environnement, jamais ailleurs.
+
+    def test_la_cle_ne_se_passe_pas_en_argument_de_commande(self):
+        """Une clé en argument fuirait dans l'historique et la liste des processus."""
+        import cli.atelier_odoo as commande  # noqa: PLC0415
+        source = inspect.getsource(commande)
+        for interdit in ("--cle-api", "--api-key", "--openai-key", "--cle-openai"):
+            self.assertNotIn(interdit, source)
+
+    def test_la_cle_est_lue_dans_l_environnement(self):
+        signature = inspect.getsource(OpenAIProvider.__init__)
+        self.assertIn("OPENAI_API_KEY", signature)
+        self.assertIn("os.environ", signature)
+
+    def test_la_cle_ne_fuit_pas_dans_le_module_genere(self):
+        secrete = "sk-test-CLE-QUI-NE-DOIT-PAS-FUIR"
+        ancienne = os.environ.get("OPENAI_API_KEY")
+        os.environ["OPENAI_API_KEY"] = secrete
+        try:
+            fichiers = OdooModuleGenerator().generate(spec_comportement())
+            for chemin, contenu in fichiers.items():
+                self.assertNotIn(secrete, contenu, chemin)
+        finally:
+            if ancienne is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = ancienne
+
+    # --- 2. Le modèle n'a aucune capacité d'écriture.
+
+    def test_le_contrat_du_fournisseur_n_expose_qu_une_methode(self):
+        publiques = [
+            n for n, _ in inspect.getmembers(AIProvider, inspect.isfunction)
+            if not n.startswith("_")
+        ]
+        self.assertEqual(publiques, ["completer_json"])
+
+    def test_le_modele_ne_recoit_que_du_texte(self):
+        """Ni client d'installation, ni système de fichiers, ni connexion Odoo."""
+        fournisseur = ScriptedProvider([json.loads(json.dumps(MINIMAL))])
+        _Drafter(fournisseur).draft("un besoin")
+        for consigne, contexte in fournisseur.appels:
+            self.assertIsInstance(consigne, str)
+            self.assertIsInstance(contexte, str)
+
+    def test_le_redacteur_ne_touche_ni_disque_ni_reseau(self):
+        source = inspect.getsource(_Drafter)
+        for interdit in ("open(", "os.remove", "shutil", "subprocess", "urllib", "zipfile"):
+            self.assertNotIn(interdit, source)
+
+    def test_la_generation_reste_en_memoire(self):
+        """Aucun fichier n'est écrit avant que la spécification soit validée."""
+        source = inspect.getsource(OdooModuleGenerator)
+        for interdit in ("open(", "os.makedirs", "shutil", "zipfile"):
+            self.assertNotIn(interdit, source)
+        fichiers = OdooModuleGenerator().generate(spec_comportement())
+        self.assertIsInstance(fichiers, dict)
+        self.assertTrue(all(isinstance(v, str) for v in fichiers.values()))
+
+    # --- 3. Toute reprise repasse par le même validateur déterministe.
+
+    def test_une_reparation_repasse_par_le_validateur(self):
+        """Le modèle ne peut pas faire passer un module que le validateur refuse."""
+        fautive = _en_dict(spec(access=[]))
+        fournisseur = ScriptedProvider([fautive, fautive, fautive])
+        boucle = RepairLoop(
+            OdooModuleGenerator(), OdooStaticValidator(), None, fournisseur, tentatives_max=3
+        )
+        issue = boucle.executer(spec(access=[]))
+        self.assertFalse(issue.reussi)
+        # Chaque tentative a bien été validée, aucune n'a été laissée passer.
+        self.assertEqual(len(issue.tentatives), 3)
+        self.assertTrue(all(not t.validation_ok for t in issue.tentatives))
+
+    def test_une_redaction_reprise_repasse_par_le_meme_controle(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "INVALIDE"
+        fournisseur = ScriptedProvider([fautive, json.loads(json.dumps(MINIMAL))])
+        rendue = _Drafter(fournisseur).draft("un besoin")
+        # La reprise est validée par ModuleSpec, pas acceptée sur parole.
+        self.assertEqual(rendue.technical_name, "mon_module")
+        self.assertEqual(len(fournisseur.appels), 2)
