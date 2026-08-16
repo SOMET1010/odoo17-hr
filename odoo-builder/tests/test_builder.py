@@ -455,3 +455,79 @@ class TestGenerationComportement(unittest.TestCase):
         self.assertTrue(any("compute" in c for c in modele["fields"]))
         self.assertTrue(modele["constraints"])
         self.assertTrue(modele["lifecycle"]["transitions"])
+
+
+# --------------------------------------------------- besoin -> spécification
+
+from spec.drafter import RedactionImpossible, SpecDrafter  # noqa: E402
+
+
+class TestRedaction(unittest.TestCase):
+    """Le modèle ne produit qu'une ModuleSpec, et elle passe les mêmes contrôles."""
+
+    def test_specification_valide_du_premier_coup(self):
+        fournisseur = ScriptedProvider([json.loads(json.dumps(MINIMAL))])
+        spec_rendue = SpecDrafter(fournisseur).draft("un module d'objets")
+        self.assertEqual(spec_rendue.technical_name, "mon_module")
+        # Le besoin est bien transmis au modèle.
+        _, contexte = fournisseur.appels[0]
+        self.assertIn("un module d'objets", contexte)
+
+    def test_specification_refusee_puis_corrigee(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["access"] = []          # modèle sans droit d'accès
+        fautive["models"][0]["fields"].append(
+            {"name": "montant", "type": "monetary", "string": "Montant"}
+        )                                # monétaire sans currency_id
+        fournisseur = ScriptedProvider([fautive, json.loads(json.dumps(MINIMAL))])
+        spec_rendue = SpecDrafter(fournisseur).draft("des objets avec un montant")
+        self.assertEqual(spec_rendue.technical_name, "mon_module")
+        # La deuxième demande doit porter le motif du refus.
+        _, contexte = fournisseur.appels[1]
+        self.assertIn("MOTIF DU REFUS", contexte)
+        self.assertIn("currency_id", contexte)
+
+    def test_abandon_apres_le_plafond(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "Nom-Invalide"
+        fournisseur = ScriptedProvider([fautive, fautive, fautive])
+        with self.assertRaises(RedactionImpossible) as capture:
+            SpecDrafter(fournisseur, tentatives_max=3).draft("peu importe")
+        self.assertIn("3 tentatives", str(capture.exception))
+        self.assertEqual(len(fournisseur.appels), 3)
+
+    def test_le_modele_ne_peut_pas_injecter_de_code(self):
+        """Le point qui rend la séparation intéressante.
+
+        Même si le modèle tente de glisser du Python dans une expression, la
+        spécification est refusée avant toute génération : rien n'atteint Odoo.
+        """
+        hostile = json.loads(json.dumps(MINIMAL))
+        hostile["models"][0]["fields"].append({
+            "name": "piege", "type": "float", "string": "Piège",
+            "compute": {"expression": "__import__('os').system('id')",
+                        "depends": []},
+        })
+        fournisseur = ScriptedProvider([hostile, hostile, hostile])
+        with self.assertRaises(RedactionImpossible):
+            SpecDrafter(fournisseur, tentatives_max=3).draft("un module piégé")
+
+    def test_du_python_rendu_a_la_place_du_json_est_refuse(self):
+        fournisseur = ScriptedProvider([
+            {"code": "class Foo(models.Model): _name = 'foo'"},
+        ])
+        with self.assertRaises(RedactionImpossible):
+            SpecDrafter(fournisseur, tentatives_max=1).draft("un module")
+
+    def test_la_chaine_complete_depuis_un_besoin(self):
+        """besoin → spécification → génération → validation, sans Odoo."""
+        fournisseur = ScriptedProvider([json.loads(json.dumps(AVEC_COMPORTEMENT))])
+        spec_rendue = SpecDrafter(fournisseur).draft(
+            "des demandes avec des lignes, un total calculé et un workflow"
+        )
+        fichiers = OdooModuleGenerator().generate(spec_rendue)
+        rapport = OdooStaticValidator().check(fichiers, spec_rendue)
+        self.assertTrue(rapport.ok, rapport.texte())
+        code = fichiers["avec_comportement/models/essai_demande.py"]
+        self.assertIn("@api.depends('line_ids.amount')", code)
+        self.assertIn("def action_valider(self):", code)

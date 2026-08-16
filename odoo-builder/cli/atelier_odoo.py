@@ -25,6 +25,7 @@ from installer.odoo_install_client import (  # noqa: E402
     ErreurInstallation, OdooInstallClient, empaqueter,
 )
 from repair.repair_loop import RepairLoop  # noqa: E402
+from spec.drafter import RedactionImpossible, SpecDrafter  # noqa: E402
 from spec.module_spec import ModuleSpec, SpecInvalide  # noqa: E402
 from validator.odoo_static_validator import OdooStaticValidator  # noqa: E402
 
@@ -35,10 +36,33 @@ def journal(message: str) -> None:
     print(message, flush=True)
 
 
+def _charger_spec(args) -> ModuleSpec:
+    """Depuis un fichier, ou depuis un besoin en français via le modèle."""
+    if args.besoin:
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise SpecInvalide(
+                "OPENAI_API_KEY n'est pas définie : impossible de traduire un "
+                "besoin en spécification. Fournir un fichier de spécification, "
+                "ou définir la clé."
+            )
+        redacteur = SpecDrafter(OpenAIProvider(), tentatives_max=args.tentatives)
+        spec = redacteur.draft(args.besoin, journal)
+        if args.ecrire_spec:
+            with open(args.ecrire_spec, "w", encoding="utf-8") as f:
+                f.write(redacteur.tentatives[-1])
+            journal(f"Spécification écrite dans {args.ecrire_spec}")
+        return spec
+
+    with open(args.spec, encoding="utf-8") as f:
+        return ModuleSpec.depuis_dict(json.load(f))
+
+
 def commande_build(args) -> int:
+    if not args.spec and not args.besoin:
+        print(f"{ROUGE}Fournir un fichier de spécification, ou --besoin.{FIN}")
+        return 2
     try:
-        with open(args.spec, encoding="utf-8") as f:
-            spec = ModuleSpec.depuis_dict(json.load(f))
+        spec = _charger_spec(args)
     except FileNotFoundError:
         print(f"{ROUGE}Spécification introuvable : {args.spec}{FIN}")
         return 2
@@ -47,6 +71,9 @@ def commande_build(args) -> int:
         return 2
     except SpecInvalide as erreur:
         print(f"{ROUGE}Spécification refusée : {erreur}{FIN}")
+        return 2
+    except RedactionImpossible as erreur:
+        print(f"{ROUGE}Rédaction impossible : {erreur}{FIN}")
         return 2
 
     print(f"{GRAS}Module {spec.technical_name} — {spec.name}{FIN}")
@@ -114,7 +141,16 @@ def principal(argv=None) -> int:
     sous = analyseur.add_subparsers(dest="commande", required=True)
 
     build = sous.add_parser("build", help="fabrique et installe un module")
-    build.add_argument("spec", help="fichier de spécification JSON")
+    build.add_argument("spec", nargs="?", help="fichier de spécification JSON")
+    build.add_argument(
+        "--besoin",
+        help="besoin en français ; le modèle en rédige la spécification "
+             "(nécessite OPENAI_API_KEY)",
+    )
+    build.add_argument(
+        "--ecrire-spec", dest="ecrire_spec",
+        help="enregistre la spécification rédigée par le modèle",
+    )
     build.add_argument("--sortie", help="dossier où écrire le module généré")
     build.add_argument(
         "--service", default=os.environ.get("INSTALLATEUR_URL", "http://localhost:8090"),
