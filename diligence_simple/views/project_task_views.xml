@@ -1,0 +1,408 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ============================================================ -->
+    <!-- Recherche : filtres simples et parlants                      -->
+    <!-- ============================================================ -->
+    <record id="diligence_task_view_search" model="ir.ui.view">
+        <field name="name">project.task.search.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">500</field>
+        <field name="arch" type="xml">
+            <search string="Diligences">
+                <field name="name" string="Diligence"/>
+                <field name="project_id"/>
+                <field name="user_ids"/>
+                <field name="tag_ids"/>
+                <filter string="Mes diligences" name="my_tasks" domain="[('user_ids', 'in', uid)]"/>
+                <separator/>
+                <filter string="En retard" name="late"
+                        domain="[('diligence_state', '!=', 'done'), ('date_deadline', '&lt;', context_today().strftime('%Y-%m-%d'))]"/>
+                <filter string="Pour aujourd'hui" name="today"
+                        domain="[('diligence_state', '!=', 'done'), ('date_deadline', '&gt;=', context_today().strftime('%Y-%m-%d')), ('date_deadline', '&lt;', (context_today() + relativedelta(days=1)).strftime('%Y-%m-%d'))]"/>
+                <filter string="Cette semaine" name="week"
+                        domain="[('diligence_state', '!=', 'done'), ('date_deadline', '&lt;', (context_today() + relativedelta(days=7)).strftime('%Y-%m-%d'))]"/>
+                <separator/>
+                <filter string="Priorité haute" name="high_priority" domain="[('diligence_priority', '=', 'haute')]"/>
+                <filter string="À faire" name="state_todo" domain="[('diligence_state', '=', 'todo')]"/>
+                <filter string="En cours" name="state_in_progress" domain="[('diligence_state', '=', 'in_progress')]"/>
+                <filter string="Terminées" name="state_done" domain="[('diligence_state', '=', 'done')]"/>
+                <group expand="0" string="Regrouper par">
+                    <filter string="Projet" name="group_project" context="{'group_by': 'project_id'}"/>
+                    <filter string="Responsable" name="group_user" context="{'group_by': 'user_ids'}"/>
+                    <filter string="Étape" name="group_state" context="{'group_by': 'diligence_state'}"/>
+                    <filter string="Priorité" name="group_priority" context="{'group_by': 'diligence_priority'}"/>
+                    <filter string="Échéance" name="group_deadline" context="{'group_by': 'date_deadline'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Création rapide depuis le kanban : 3 champs, pas plus        -->
+    <!-- ============================================================ -->
+    <record id="diligence_task_view_form_quick" model="ir.ui.view">
+        <field name="name">project.task.form.quick.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">1000</field>
+        <field name="arch" type="xml">
+            <form>
+                <group>
+                    <field name="name" placeholder="Titre de la diligence…"/>
+                    <field name="user_ids" string="Responsables" widget="many2many_avatar_user"/>
+                    <field name="date_deadline" string="Échéance"/>
+                </group>
+            </form>
+        </field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Kanban : 4 colonnes fixes, cartes lisibles, drag & drop      -->
+    <!-- ============================================================ -->
+    <record id="diligence_task_view_kanban" model="ir.ui.view">
+        <field name="name">project.task.kanban.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">500</field>
+        <field name="arch" type="xml">
+            <kanban default_group_by="diligence_state" on_create="quick_create"
+                    quick_create_view="diligence_simple.diligence_task_view_form_quick"
+                    class="o_kanban_small_column o_diligence_kanban" sample="1">
+                <field name="diligence_state"/>
+                <field name="diligence_priority"/>
+                <field name="diligence_overdue"/>
+                <field name="diligence_progress"/>
+                <field name="diligence_subtask_count"/>
+                <field name="date_deadline"/>
+                <field name="project_id"/>
+                <progressbar field="diligence_priority"
+                             colors='{"haute": "danger", "moyenne": "warning", "normale": "success"}'/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div t-attf-class="oe_kanban_global_click o_diligence_card p-2 o_diligence_prio_#{record.diligence_priority.raw_value} #{record.diligence_overdue.raw_value ? 'o_diligence_late' : ''}">
+                            <div class="d-flex justify-content-between align-items-start mb-1">
+                                <strong class="o_kanban_record_title"><field name="name"/></strong>
+                                <span t-if="record.diligence_priority.raw_value == 'haute'"
+                                      class="badge rounded-pill text-bg-danger ms-1">Haute</span>
+                                <span t-elif="record.diligence_priority.raw_value == 'moyenne'"
+                                      class="badge rounded-pill text-bg-warning ms-1">Moyenne</span>
+                            </div>
+                            <div t-if="record.project_id.value" class="small text-muted">
+                                <i class="fa fa-folder-o" title="Projet"/> <field name="project_id"/>
+                            </div>
+                            <div t-if="record.date_deadline.raw_value"
+                                 t-attf-class="small #{record.diligence_overdue.raw_value ? 'text-danger fw-bold' : 'text-muted'}">
+                                <i class="fa fa-calendar" title="Échéance"/> <field name="date_deadline"/>
+                            </div>
+                            <div t-if="record.diligence_subtask_count.raw_value" class="mt-1">
+                                <div class="progress" style="height: 5px;">
+                                    <div class="progress-bar bg-success"
+                                         t-attf-style="width: #{record.diligence_progress.raw_value}%;"/>
+                                </div>
+                                <span class="small text-muted">
+                                    <t t-out="record.diligence_progress.raw_value"/>&#37; ·
+                                    <t t-out="record.diligence_subtask_count.raw_value"/> sous-tâche(s)
+                                </span>
+                            </div>
+                            <div class="o_kanban_record_bottom mt-2">
+                                <div class="oe_kanban_bottom_left">
+                                    <field name="tag_ids" widget="many2many_tags" options="{'color_field': 'color'}"/>
+                                    <field name="activity_ids" widget="kanban_activity"/>
+                                </div>
+                                <div class="oe_kanban_bottom_right">
+                                    <field name="user_ids" widget="many2many_avatar_user"/>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Formulaire : l'essentiel seulement, chatter conservé         -->
+    <!-- ============================================================ -->
+    <record id="diligence_task_view_form" model="ir.ui.view">
+        <field name="name">project.task.form.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">500</field>
+        <field name="arch" type="xml">
+            <form string="Diligence" class="o_diligence_form">
+                <header>
+                    <field name="diligence_state" widget="statusbar" options="{'clickable': '1'}"/>
+                </header>
+                <sheet>
+                    <!-- Le domaine de project_id référence company_id : Odoo 17 exige
+                         que le champ soit présent dans la vue, même masqué. -->
+                    <field name="company_id" invisible="1"/>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="Titre de la diligence…"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="project_id" placeholder="Projet (optionnel)"/>
+                            <field name="user_ids" string="Responsables" widget="many2many_avatar_user"/>
+                            <field name="diligence_priority" widget="radio" options="{'horizontal': true}"/>
+                        </group>
+                        <group>
+                            <field name="date_deadline" string="Échéance"/>
+                            <field name="tag_ids" widget="many2many_tags" options="{'color_field': 'color'}"/>
+                            <field name="diligence_progress" widget="progressbar"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Description" name="description">
+                            <field name="description" placeholder="Informations et objectifs de la diligence…"/>
+                        </page>
+                        <page string="Sous-tâches" name="subtasks">
+                            <field name="child_ids" context="{'default_project_id': project_id}">
+                                <tree editable="bottom">
+                                    <field name="diligence_state" string="Étape" widget="selection_badge" optional="show"/>
+                                    <field name="name"/>
+                                    <field name="user_ids" string="Responsables" widget="many2many_avatar_user" optional="show"/>
+                                    <field name="date_deadline" string="Échéance" optional="show"/>
+                                </tree>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Liste : décorations retard / terminé, édition de masse       -->
+    <!-- ============================================================ -->
+    <record id="diligence_task_view_tree" model="ir.ui.view">
+        <field name="name">project.task.tree.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">500</field>
+        <field name="arch" type="xml">
+            <tree string="Diligences" multi_edit="1" sample="1"
+                  decoration-danger="diligence_overdue"
+                  decoration-muted="diligence_state == 'done'">
+                <field name="diligence_overdue" column_invisible="1"/>
+                <!-- Comme dans le formulaire : le domaine de project_id référence
+                     company_id, qui doit donc figurer dans la vue. -->
+                <field name="company_id" column_invisible="1"/>
+                <field name="name" string="Diligence"/>
+                <field name="project_id" optional="show"/>
+                <field name="user_ids" string="Responsables" widget="many2many_avatar_user" optional="show"/>
+                <field name="date_deadline" string="Échéance" optional="show"/>
+                <field name="diligence_priority" optional="show"/>
+                <field name="diligence_state" widget="badge"
+                       decoration-info="diligence_state == 'in_progress'"
+                       decoration-warning="diligence_state == 'validation'"
+                       decoration-success="diligence_state == 'done'"/>
+            </tree>
+        </field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Calendrier des échéances                                     -->
+    <!-- ============================================================ -->
+    <record id="diligence_task_view_calendar" model="ir.ui.view">
+        <field name="name">project.task.calendar.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">500</field>
+        <field name="arch" type="xml">
+            <calendar string="Échéances des diligences" date_start="date_deadline"
+                      mode="month" color="project_id" event_open_popup="1" quick_create="0">
+                <field name="name"/>
+                <field name="user_ids" widget="many2many_avatar_user"/>
+                <field name="diligence_priority"/>
+            </calendar>
+        </field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Rapports : pivot et graphique                                -->
+    <!-- ============================================================ -->
+    <record id="diligence_task_view_pivot" model="ir.ui.view">
+        <field name="name">project.task.pivot.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">500</field>
+        <field name="arch" type="xml">
+            <pivot string="Analyse des diligences" sample="1">
+                <field name="project_id" type="row"/>
+                <field name="diligence_state" type="col"/>
+            </pivot>
+        </field>
+    </record>
+
+    <record id="diligence_task_view_graph" model="ir.ui.view">
+        <field name="name">project.task.graph.diligence</field>
+        <field name="model">project.task</field>
+        <field name="priority">500</field>
+        <field name="arch" type="xml">
+            <graph string="Diligences" type="bar" stacked="1" sample="1">
+                <field name="project_id"/>
+                <field name="diligence_state"/>
+            </graph>
+        </field>
+    </record>
+
+    <!-- ============================================================ -->
+    <!-- Actions                                                      -->
+    <!-- ============================================================ -->
+
+    <!-- Aujourd'hui : ce qui nécessite mon attention -->
+    <record id="action_diligence_today" model="ir.actions.act_window">
+        <field name="name">Aujourd'hui</field>
+        <field name="res_model">project.task</field>
+        <field name="view_mode">tree,kanban,form</field>
+        <field name="domain">[('user_ids', 'in', uid)]</field>
+        <field name="context">{'search_default_late': 1, 'search_default_today': 1}</field>
+        <field name="search_view_id" ref="diligence_task_view_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Rien ne nécessite votre attention aujourd'hui !</p>
+            <p>Les diligences en retard ou à échéance aujourd'hui apparaîtront ici.</p>
+        </field>
+    </record>
+    <record id="action_diligence_today_tree" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_today"/>
+        <field name="view_mode">tree</field>
+        <field name="view_id" ref="diligence_task_view_tree"/>
+        <field name="sequence">1</field>
+    </record>
+    <record id="action_diligence_today_kanban" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_today"/>
+        <field name="view_mode">kanban</field>
+        <field name="view_id" ref="diligence_task_view_kanban"/>
+        <field name="sequence">2</field>
+    </record>
+    <record id="action_diligence_today_form" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_today"/>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="diligence_task_view_form"/>
+        <field name="sequence">3</field>
+    </record>
+
+    <!-- Mes diligences : kanban par étape -->
+    <record id="action_diligence_my" model="ir.actions.act_window">
+        <field name="name">Mes diligences</field>
+        <field name="res_model">project.task</field>
+        <field name="view_mode">kanban,tree,form,calendar,activity</field>
+        <field name="domain">[('user_ids', 'in', uid)]</field>
+        <field name="context">{'default_user_ids': [uid]}</field>
+        <field name="search_view_id" ref="diligence_task_view_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Créez votre première diligence</p>
+            <p>Cliquez sur « Nouveau » ou sur le + d'une colonne : un titre suffit pour démarrer.</p>
+        </field>
+    </record>
+    <record id="action_diligence_my_kanban" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_my"/>
+        <field name="view_mode">kanban</field>
+        <field name="view_id" ref="diligence_task_view_kanban"/>
+        <field name="sequence">1</field>
+    </record>
+    <record id="action_diligence_my_tree" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_my"/>
+        <field name="view_mode">tree</field>
+        <field name="view_id" ref="diligence_task_view_tree"/>
+        <field name="sequence">2</field>
+    </record>
+    <record id="action_diligence_my_form" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_my"/>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="diligence_task_view_form"/>
+        <field name="sequence">3</field>
+    </record>
+    <record id="action_diligence_my_calendar" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_my"/>
+        <field name="view_mode">calendar</field>
+        <field name="view_id" ref="diligence_task_view_calendar"/>
+        <field name="sequence">4</field>
+    </record>
+
+    <!-- Toutes les diligences -->
+    <record id="action_diligence_all" model="ir.actions.act_window">
+        <field name="name">Toutes les diligences</field>
+        <field name="res_model">project.task</field>
+        <field name="view_mode">kanban,tree,form,calendar,activity</field>
+        <field name="context">{'search_default_group_project': 1}</field>
+        <field name="search_view_id" ref="diligence_task_view_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Aucune diligence pour le moment</p>
+            <p>Créez une diligence en un clic : un titre suffit pour démarrer.</p>
+        </field>
+    </record>
+    <record id="action_diligence_all_kanban" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_all"/>
+        <field name="view_mode">kanban</field>
+        <field name="view_id" ref="diligence_task_view_kanban"/>
+        <field name="sequence">1</field>
+    </record>
+    <record id="action_diligence_all_tree" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_all"/>
+        <field name="view_mode">tree</field>
+        <field name="view_id" ref="diligence_task_view_tree"/>
+        <field name="sequence">2</field>
+    </record>
+    <record id="action_diligence_all_form" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_all"/>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="diligence_task_view_form"/>
+        <field name="sequence">3</field>
+    </record>
+    <record id="action_diligence_all_calendar" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_all"/>
+        <field name="view_mode">calendar</field>
+        <field name="view_id" ref="diligence_task_view_calendar"/>
+        <field name="sequence">4</field>
+    </record>
+
+    <!-- Calendrier -->
+    <record id="action_diligence_calendar" model="ir.actions.act_window">
+        <field name="name">Calendrier des échéances</field>
+        <field name="res_model">project.task</field>
+        <field name="view_mode">calendar,tree,form</field>
+        <field name="context">{'search_default_my_tasks': 1}</field>
+        <field name="search_view_id" ref="diligence_task_view_search"/>
+    </record>
+    <record id="action_diligence_calendar_calendar" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_calendar"/>
+        <field name="view_mode">calendar</field>
+        <field name="view_id" ref="diligence_task_view_calendar"/>
+        <field name="sequence">1</field>
+    </record>
+    <record id="action_diligence_calendar_tree" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_calendar"/>
+        <field name="view_mode">tree</field>
+        <field name="view_id" ref="diligence_task_view_tree"/>
+        <field name="sequence">2</field>
+    </record>
+    <record id="action_diligence_calendar_form" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_calendar"/>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="diligence_task_view_form"/>
+        <field name="sequence">3</field>
+    </record>
+
+    <!-- Rapports -->
+    <record id="action_diligence_report" model="ir.actions.act_window">
+        <field name="name">Rapports</field>
+        <field name="res_model">project.task</field>
+        <field name="view_mode">pivot,graph</field>
+        <field name="search_view_id" ref="diligence_task_view_search"/>
+    </record>
+    <record id="action_diligence_report_pivot" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_report"/>
+        <field name="view_mode">pivot</field>
+        <field name="view_id" ref="diligence_task_view_pivot"/>
+        <field name="sequence">1</field>
+    </record>
+    <record id="action_diligence_report_graph" model="ir.actions.act_window.view">
+        <field name="act_window_id" ref="action_diligence_report"/>
+        <field name="view_mode">graph</field>
+        <field name="view_id" ref="diligence_task_view_graph"/>
+        <field name="sequence">2</field>
+    </record>
+
+</odoo>

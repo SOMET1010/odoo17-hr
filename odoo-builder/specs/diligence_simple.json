@@ -1,0 +1,101 @@
+{
+  "_commentaire": "Spécification écrite depuis le BESOIN MÉTIER seul, sans regarder le module diligence_simple existant. Ce dernier sert d'oracle : on compare après coup ce que le générateur produit à ce qui marche déjà en production.",
+
+  "technical_name": "diligence_simple",
+  "name": "Diligences",
+  "summary": "Gestion de tâches simplifiée : une interface épurée au-dessus du module Projet",
+  "description": "Interface épurée pour gérer les diligences au quotidien : ce qui nécessite attention aujourd'hui, un kanban simple, des priorités visuelles, une fiche réduite à l'essentiel, un calendrier des échéances et des rapports.",
+  "category": "Services/Project",
+  "version": "17.0.1.0.0",
+  "license": "LGPL-3",
+  "application": true,
+  "depends": ["project"],
+
+  "models": [
+    {
+      "name": "project.task",
+      "inherit": "project.task",
+      "description": "Diligence — tâche de projet vue comme une diligence"
+    }
+  ],
+
+  "views": [
+    {
+      "model": "project.task",
+      "type": "tree",
+      "name": "Diligences",
+      "fields": ["name", "user_ids", "date_deadline", "priority", "stage_id"],
+      "invisible_fields": ["project_id", "company_id"]
+    },
+    {
+      "model": "project.task",
+      "type": "form",
+      "name": "Diligence",
+      "fields": ["name", "user_ids", "date_deadline", "priority", "description"],
+      "invisible_fields": ["project_id", "company_id"]
+    },
+    {
+      "model": "project.task",
+      "type": "kanban",
+      "name": "Diligences par étape",
+      "fields": ["name", "user_ids", "date_deadline", "priority"]
+    },
+    {
+      "model": "project.task",
+      "type": "search",
+      "name": "Recherche de diligences",
+      "fields": ["name", "user_ids", "stage_id"]
+    },
+    {
+      "model": "project.task",
+      "type": "calendar",
+      "name": "Échéances des diligences",
+      "fields": ["name", "date_deadline"]
+    }
+  ],
+
+  "actions": [
+    {
+      "id": "action_diligence_aujourdhui",
+      "name": "Aujourd'hui",
+      "model": "project.task",
+      "view_modes": ["kanban", "tree", "form"],
+      "domain": "[('date_deadline', '<=', context_today().strftime('%Y-%m-%d'))]",
+      "context": "{}"
+    },
+    {
+      "id": "action_diligence_mes",
+      "name": "Mes diligences",
+      "model": "project.task",
+      "view_modes": ["kanban", "tree", "form"],
+      "domain": "[('user_ids', 'in', uid)]",
+      "context": "{}"
+    },
+    {
+      "id": "action_diligence_toutes",
+      "name": "Toutes les diligences",
+      "model": "project.task",
+      "view_modes": ["tree", "kanban", "form"],
+      "domain": "[]",
+      "context": "{}"
+    },
+    {
+      "id": "action_diligence_calendrier",
+      "name": "Calendrier",
+      "model": "project.task",
+      "view_modes": ["calendar", "tree", "form"],
+      "domain": "[]",
+      "context": "{}"
+    }
+  ],
+
+  "menus": [
+    { "id": "menu_diligence_racine", "name": "Diligences", "sequence": 25 },
+    { "id": "menu_diligence_aujourdhui", "name": "Aujourd'hui", "parent": "menu_diligence_racine", "action": "action_diligence_aujourdhui", "sequence": 10 },
+    { "id": "menu_diligence_mes", "name": "Mes diligences", "parent": "menu_diligence_racine", "action": "action_diligence_mes", "sequence": 20 },
+    { "id": "menu_diligence_toutes", "name": "Toutes les diligences", "parent": "menu_diligence_racine", "action": "action_diligence_toutes", "sequence": 30 },
+    { "id": "menu_diligence_calendrier", "name": "Calendrier", "parent": "menu_diligence_racine", "action": "action_diligence_calendrier", "sequence": 40 }
+  ],
+
+  "access": []
+}

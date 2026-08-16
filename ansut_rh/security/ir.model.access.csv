@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_ansut_integration_hr,ansut.integration hr user,model_ansut_integration,hr.group_hr_user,1,1,1,1
+access_ansut_integration_document_hr,ansut.integration.document hr user,model_ansut_integration_document,hr.group_hr_user,1,1,1,1
+access_ansut_integration_kit_hr,ansut.integration.kit hr user,model_ansut_integration_kit,hr.group_hr_user,1,1,1,1
+access_ansut_leave_refuse_wizard,ansut.leave.refuse.wizard user,model_ansut_leave_refuse_wizard,base.group_user,1,1,1,0

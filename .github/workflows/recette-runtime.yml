@@ -1,0 +1,52 @@
+name: Recette d'exécution de la pile Odoo
+
+# Déclenchement manuel : la recette démarre la pile complète et joue les
+# contrôles d'exécution que `docker compose config` ne peut pas prouver.
+# Elle dure une dizaine de minutes, d'où l'absence de déclenchement à chaque
+# poussée. Ajouter un bloc `schedule` ci-dessous pour un passage hebdomadaire.
+on:
+  # Déclenchement manuel : ne fonctionne qu'une fois ce fichier présent sur la
+  # branche par défaut, contrainte de GitHub.
+  workflow_dispatch:
+  # En attendant, la recette se joue automatiquement quand la pile ou la recette
+  # elle-même changent sur la branche de travail.
+  push:
+    branches:
+      - claude/odoo-modules-improvement-li5nwi
+      - claude/odoo-react-alchemy-handoff-hmig21
+    paths:
+      - '.docker/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/recette-runtime.yml'
+
+jobs:
+  recette:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier que le runner dispose de Docker
+        run: |
+          docker --version
+          docker compose version
+          docker info --format 'Serveur : {{.ServerVersion}}'
+
+      - name: Jouer la recette
+        run: |
+          chmod +x .docker/verifier-runtime.sh
+          ./.docker/verifier-runtime.sh --keep
+
+      - name: Journaux des conteneurs
+        if: always()
+        run: |
+          echo "===== odoo ====="
+          docker compose logs --tail=300 odoo || true
+          echo "===== db ====="
+          docker compose logs --tail=100 db || true
+
+      - name: Éteindre la pile
+        if: always()
+        # Le profil doit être nommé, sinon le conteneur du service reste
+        # allumé et retient le volume et le réseau.
+        run: docker compose --profile installateur down -v || true

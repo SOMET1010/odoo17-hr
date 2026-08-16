@@ -1,0 +1,27 @@
+name: Recette du Odoo Builder
+
+# Partie déterministe du Builder : sans Odoo, sans réseau, sans clé d'API.
+# La fabrication réelle d'un module installé est l'étape 9 de
+# .docker/verifier-runtime.sh.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'odoo-builder/**'
+      - '.github/workflows/odoo-builder.yml'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Recette du Builder
+        working-directory: odoo-builder
+        run: python -m unittest discover -s tests -t . -v
+      - name: La spécification de référence se génère et se valide
+        working-directory: odoo-builder
+        run: python cli/atelier_odoo.py build specs/diligence_simple.json --sans-installation
