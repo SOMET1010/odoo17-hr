@@ -7,9 +7,12 @@ le modèle qui a produit la spécification.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 import zipfile
 
@@ -20,7 +23,7 @@ from ai.provider import ScriptedProvider  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from installer.odoo_install_client import empaqueter  # noqa: E402
 from repair.repair_loop import RepairLoop, _en_dict  # noqa: E402
-from spec.module_spec import ModuleSpec, SpecInvalide  # noqa: E402
+from spec.module_spec import Champ, ModuleSpec, SpecInvalide  # noqa: E402
 from validator.odoo_static_validator import OdooStaticValidator  # noqa: E402
 
 MINIMAL = {
@@ -311,11 +314,25 @@ AVEC_COMPORTEMENT = {
                              "validations": [{"condition": "total > 0",
                                               "message": "Total nul."}]}],
         },
+    }, {
+        # Le modèle porteur de « line_ids ». Il manquait : le jeu d'essai
+        # décrivait une relation vers un modèle que personne ne créait, ce
+        # qu'Odoo aurait refusé. Aucun test ne pouvait le dire tant que la
+        # validation ignorait les relations.
+        "name": "essai.ligne",
+        "description": "Ligne",
+        "fields": [
+            {"name": "name", "type": "char", "string": "Libellé", "required": True},
+            {"name": "amount", "type": "float", "string": "Montant"},
+            {"name": "demande_id", "type": "many2one", "string": "Demande",
+             "comodel": "essai.demande"},
+        ],
     }],
     "views": [{"model": "essai.demande", "type": "form", "name": "Demande",
                "fields": ["name", "total"]}],
     "actions": [], "menus": [],
-    "access": [{"model": "essai.demande", "group": "base.group_user", "perms": "rwcd"}],
+    "access": [{"model": "essai.demande", "group": "base.group_user", "perms": "rwcd"},
+               {"model": "essai.ligne", "group": "base.group_user", "perms": "rwcd"}],
 }
 
 
@@ -455,3 +472,1220 @@ class TestGenerationComportement(unittest.TestCase):
         self.assertTrue(any("compute" in c for c in modele["fields"]))
         self.assertTrue(modele["constraints"])
         self.assertTrue(modele["lifecycle"]["transitions"])
+
+
+# --------------------------------------------------- besoin -> spécification
+
+from spec.drafter import RedactionImpossible, SpecDrafter  # noqa: E402
+
+
+class TestRedaction(unittest.TestCase):
+    """Le modèle ne produit qu'une ModuleSpec, et elle passe les mêmes contrôles."""
+
+    def test_specification_valide_du_premier_coup(self):
+        fournisseur = ScriptedProvider([json.loads(json.dumps(MINIMAL))])
+        spec_rendue = SpecDrafter(fournisseur).draft("un module d'objets")
+        self.assertEqual(spec_rendue.technical_name, "mon_module")
+        # Le besoin est bien transmis au modèle.
+        _, contexte = fournisseur.appels[0]
+        self.assertIn("un module d'objets", contexte)
+
+    def test_specification_refusee_puis_corrigee(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["access"] = []          # modèle sans droit d'accès
+        fautive["models"][0]["fields"].append(
+            {"name": "montant", "type": "monetary", "string": "Montant"}
+        )                                # monétaire sans currency_id
+        fournisseur = ScriptedProvider([fautive, json.loads(json.dumps(MINIMAL))])
+        spec_rendue = SpecDrafter(fournisseur).draft("des objets avec un montant")
+        self.assertEqual(spec_rendue.technical_name, "mon_module")
+        # La deuxième demande doit porter le motif du refus.
+        _, contexte = fournisseur.appels[1]
+        self.assertIn("MOTIF DU REFUS", contexte)
+        self.assertIn("currency_id", contexte)
+
+    def test_abandon_apres_le_plafond(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "Nom-Invalide"
+        fournisseur = ScriptedProvider([fautive, fautive, fautive])
+        with self.assertRaises(RedactionImpossible) as capture:
+            SpecDrafter(fournisseur, tentatives_max=3).draft("peu importe")
+        self.assertIn("3 tentatives", str(capture.exception))
+        self.assertEqual(len(fournisseur.appels), 3)
+
+    def test_le_modele_ne_peut_pas_injecter_de_code(self):
+        """Le point qui rend la séparation intéressante.
+
+        Même si le modèle tente de glisser du Python dans une expression, la
+        spécification est refusée avant toute génération : rien n'atteint Odoo.
+        """
+        hostile = json.loads(json.dumps(MINIMAL))
+        hostile["models"][0]["fields"].append({
+            "name": "piege", "type": "float", "string": "Piège",
+            "compute": {"expression": "__import__('os').system('id')",
+                        "depends": []},
+        })
+        fournisseur = ScriptedProvider([hostile, hostile, hostile])
+        with self.assertRaises(RedactionImpossible):
+            SpecDrafter(fournisseur, tentatives_max=3).draft("un module piégé")
+
+    def test_du_python_rendu_a_la_place_du_json_est_refuse(self):
+        fournisseur = ScriptedProvider([
+            {"code": "class Foo(models.Model): _name = 'foo'"},
+        ])
+        with self.assertRaises(RedactionImpossible):
+            SpecDrafter(fournisseur, tentatives_max=1).draft("un module")
+
+    def test_la_chaine_complete_depuis_un_besoin(self):
+        """besoin → spécification → génération → validation, sans Odoo."""
+        fournisseur = ScriptedProvider([json.loads(json.dumps(AVEC_COMPORTEMENT))])
+        spec_rendue = SpecDrafter(fournisseur).draft(
+            "des demandes avec des lignes, un total calculé et un workflow"
+        )
+        fichiers = OdooModuleGenerator().generate(spec_rendue)
+        rapport = OdooStaticValidator().check(fichiers, spec_rendue)
+        self.assertTrue(rapport.ok, rapport.texte())
+        code = fichiers["avec_comportement/models/essai_demande.py"]
+        self.assertIn("@api.depends('line_ids.amount')", code)
+        self.assertIn("def action_valider(self):", code)
+
+
+# ------------------------------------------------- invariants de sécurité
+
+import inspect  # noqa: E402
+
+from ai.provider import AIProvider, OpenAIProvider  # noqa: E402
+from spec.drafter import SpecDrafter as _Drafter  # noqa: E402
+
+
+class TestInvariantsDeSecurite(unittest.TestCase):
+    """Trois invariants à conserver quand l'interface sera branchée.
+
+    Ils sont vérifiés plutôt que documentés : une régression les casse ici,
+    pas en production.
+    """
+
+    # --- 1. La clé reste dans l'environnement, jamais ailleurs.
+
+    def test_la_cle_ne_se_passe_pas_en_argument_de_commande(self):
+        """Une clé en argument fuirait dans l'historique et la liste des processus."""
+        import cli.atelier_odoo as commande  # noqa: PLC0415
+        source = inspect.getsource(commande)
+        for interdit in ("--cle-api", "--api-key", "--openai-key", "--cle-openai"):
+            self.assertNotIn(interdit, source)
+
+    def test_la_cle_est_lue_dans_l_environnement(self):
+        signature = inspect.getsource(OpenAIProvider.__init__)
+        self.assertIn("OPENAI_API_KEY", signature)
+        self.assertIn("os.environ", signature)
+
+    def test_la_cle_ne_fuit_pas_dans_le_module_genere(self):
+        secrete = "sk-test-CLE-QUI-NE-DOIT-PAS-FUIR"
+        ancienne = os.environ.get("OPENAI_API_KEY")
+        os.environ["OPENAI_API_KEY"] = secrete
+        try:
+            fichiers = OdooModuleGenerator().generate(spec_comportement())
+            for chemin, contenu in fichiers.items():
+                self.assertNotIn(secrete, contenu, chemin)
+        finally:
+            if ancienne is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = ancienne
+
+    # --- 2. Le modèle n'a aucune capacité d'écriture.
+
+    def test_le_contrat_du_fournisseur_n_expose_qu_une_methode(self):
+        publiques = [
+            n for n, _ in inspect.getmembers(AIProvider, inspect.isfunction)
+            if not n.startswith("_")
+        ]
+        self.assertEqual(publiques, ["completer_json"])
+
+    def test_le_modele_ne_recoit_que_du_texte(self):
+        """Ni client d'installation, ni système de fichiers, ni connexion Odoo."""
+        fournisseur = ScriptedProvider([json.loads(json.dumps(MINIMAL))])
+        _Drafter(fournisseur).draft("un besoin")
+        for consigne, contexte in fournisseur.appels:
+            self.assertIsInstance(consigne, str)
+            self.assertIsInstance(contexte, str)
+
+    def test_le_redacteur_ne_touche_ni_disque_ni_reseau(self):
+        source = inspect.getsource(_Drafter)
+        for interdit in ("open(", "os.remove", "shutil", "subprocess", "urllib", "zipfile"):
+            self.assertNotIn(interdit, source)
+
+    def test_la_generation_reste_en_memoire(self):
+        """Aucun fichier n'est écrit avant que la spécification soit validée."""
+        source = inspect.getsource(OdooModuleGenerator)
+        for interdit in ("open(", "os.makedirs", "shutil", "zipfile"):
+            self.assertNotIn(interdit, source)
+        fichiers = OdooModuleGenerator().generate(spec_comportement())
+        self.assertIsInstance(fichiers, dict)
+        self.assertTrue(all(isinstance(v, str) for v in fichiers.values()))
+
+    # --- 3. Toute reprise repasse par le même validateur déterministe.
+
+    def test_une_reparation_repasse_par_le_validateur(self):
+        """Le modèle ne peut pas faire passer un module que le validateur refuse."""
+        fautive = _en_dict(spec(access=[]))
+        fournisseur = ScriptedProvider([fautive, fautive, fautive])
+        boucle = RepairLoop(
+            OdooModuleGenerator(), OdooStaticValidator(), None, fournisseur, tentatives_max=3
+        )
+        issue = boucle.executer(spec(access=[]))
+        self.assertFalse(issue.reussi)
+        # Chaque tentative a bien été validée, aucune n'a été laissée passer.
+        self.assertEqual(len(issue.tentatives), 3)
+        self.assertTrue(all(not t.validation_ok for t in issue.tentatives))
+
+    def test_une_redaction_reprise_repasse_par_le_meme_controle(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "INVALIDE"
+        fournisseur = ScriptedProvider([fautive, json.loads(json.dumps(MINIMAL))])
+        rendue = _Drafter(fournisseur).draft("un besoin")
+        # La reprise est validée par ModuleSpec, pas acceptée sur parole.
+        self.assertEqual(rendue.technical_name, "mon_module")
+        self.assertEqual(len(fournisseur.appels), 2)
+
+
+class TestFournisseurConfigurable(unittest.TestCase):
+    """Changer de fournisseur ne doit toucher aucun autre fichier."""
+
+    def setUp(self):
+        self.anciennes = {
+            c: os.environ.get(c)
+            for c in ("BUILDER_IA_CLE", "BUILDER_IA_URL", "BUILDER_IA_MODELE", "OPENAI_API_KEY")
+        }
+        for c in self.anciennes:
+            os.environ.pop(c, None)
+
+    def tearDown(self):
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_aucun_fournisseur_sans_cle(self):
+        from ai.provider import fournisseur_depuis_environnement
+        self.assertIsNone(fournisseur_depuis_environnement())
+
+    def test_point_d_entree_et_modele_viennent_de_l_environnement(self):
+        from ai.provider import fournisseur_depuis_environnement
+        os.environ["BUILDER_IA_CLE"] = "cle-de-test"
+        os.environ["BUILDER_IA_URL"] = "https://exemple.invalide/v1/chat/completions"
+        os.environ["BUILDER_IA_MODELE"] = "un-autre-modele"
+        fournisseur = fournisseur_depuis_environnement()
+        self.assertEqual(fournisseur.url, "https://exemple.invalide/v1/chat/completions")
+        self.assertEqual(fournisseur.modele, "un-autre-modele")
+
+    def test_repli_sur_openai_par_defaut(self):
+        from ai.provider import fournisseur_depuis_environnement
+        os.environ["OPENAI_API_KEY"] = "cle-de-test"
+        fournisseur = fournisseur_depuis_environnement()
+        self.assertIn("api.openai.com", fournisseur.url)
+
+
+# ------------------------------------------------------------------ routeur
+
+from ai.provider import AnthropicProvider, ErreurFournisseur, extraire_json  # noqa: E402
+from ai.routeur import (  # noqa: E402
+    ConfigurationInvalide, Etape, RouterProvider, routeur_depuis_config,
+)
+
+
+class FournisseurEnPanne(AIProvider):
+    """Indisponible : réseau, quota, 5xx — ce sur quoi le routeur bascule."""
+
+    def __init__(self, motif="503"):
+        self.motif = motif
+        self.appels = 0
+
+    def completer_json(self, consigne, contexte):
+        self.appels += 1
+        raise ErreurFournisseur(self.motif)
+
+
+class FournisseurQuiRepond(AIProvider):
+    def __init__(self, reponse):
+        self.reponse = reponse
+        self.appels = 0
+
+    def completer_json(self, consigne, contexte):
+        self.appels += 1
+        return self.reponse
+
+
+class TestRouteur(unittest.TestCase):
+    def test_bascule_sur_le_suivant_quand_le_premier_est_en_panne(self):
+        panne = FournisseurEnPanne("502 Bad Gateway")
+        secours = FournisseurQuiRepond({"ok": True})
+        routeur = RouterProvider(
+            etapes=[Etape("kimi", panne), Etape("openai", secours)],
+            journal=lambda _: None,
+        )
+        self.assertEqual(routeur.completer_json("c", "x"), {"ok": True})
+        self.assertEqual(routeur.dernier_utilise, "openai")
+        self.assertEqual(panne.appels, 1)
+        self.assertEqual(len(routeur.incidents), 1)
+
+    def test_l_ordre_est_respecte(self):
+        premier = FournisseurQuiRepond({"source": "premier"})
+        second = FournisseurQuiRepond({"source": "second"})
+        routeur = RouterProvider(
+            etapes=[Etape("a", premier), Etape("b", second)], journal=lambda _: None
+        )
+        self.assertEqual(routeur.completer_json("c", "x"), {"source": "premier"})
+        self.assertEqual(second.appels, 0)
+
+    def test_tous_en_panne_rend_une_erreur_qui_les_nomme(self):
+        routeur = RouterProvider(
+            etapes=[Etape("a", FournisseurEnPanne("429")),
+                    Etape("b", FournisseurEnPanne("timeout"))],
+            journal=lambda _: None,
+        )
+        with self.assertRaises(ErreurFournisseur) as capture:
+            routeur.completer_json("c", "x")
+        self.assertIn("429", str(capture.exception))
+        self.assertIn("timeout", str(capture.exception))
+
+    def test_une_specification_refusee_ne_fait_PAS_basculer(self):
+        """Le point de conception : panne ≠ spécification perfectible.
+
+        Un fournisseur qui répond correctement garde la main ; c'est le
+        rédacteur qui lui renvoie le motif du refus. Sans cette distinction,
+        une spécification simplement incomplète brûlerait toute la liste.
+        """
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "NOM-INVALIDE"      # refusé par ModuleSpec
+        correcte = json.loads(json.dumps(MINIMAL))
+
+        class Principal(AIProvider):
+            """Se trompe d'abord, se corrige ensuite — comme un vrai modèle."""
+
+            def __init__(self):
+                self.appels = 0
+
+            def completer_json(self, consigne, contexte):
+                self.appels += 1
+                return fautive if self.appels == 1 else correcte
+
+        principal = Principal()
+        secours = FournisseurQuiRepond(correcte)
+        routeur = RouterProvider(
+            etapes=[Etape("principal", principal), Etape("secours", secours)],
+            journal=lambda _: None,
+        )
+        rendue = _Drafter(routeur, tentatives_max=2).draft("un besoin")
+
+        self.assertEqual(rendue.technical_name, "mon_module")
+        # Le rédacteur a bien renvoyé le motif au MÊME fournisseur…
+        self.assertEqual(principal.appels, 2)
+        # …et le secours n'a jamais été sollicité : ce n'était pas une panne.
+        self.assertEqual(secours.appels, 0)
+
+
+class TestConfigurationDuRouteur(unittest.TestCase):
+    def setUp(self):
+        self.anciennes = {c: os.environ.get(c) for c in ("CLE_A", "CLE_B")}
+        os.environ["CLE_A"] = "valeur-a"
+        os.environ.pop("CLE_B", None)
+
+    def tearDown(self):
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_construit_depuis_une_description(self):
+        routeur = routeur_depuis_config({"fournisseurs": [
+            {"nom": "a", "protocole": "openai", "modele": "m", "cle_env": "CLE_A"},
+        ]}, journal=lambda _: None)
+        self.assertEqual(routeur.noms, ["a"])
+
+    def test_ignore_un_fournisseur_dont_la_cle_manque(self):
+        routeur = routeur_depuis_config({"fournisseurs": [
+            {"nom": "absent", "modele": "m", "cle_env": "CLE_B"},
+            {"nom": "present", "modele": "m", "cle_env": "CLE_A"},
+        ]}, journal=lambda _: None)
+        self.assertEqual(routeur.noms, ["present"])
+
+    def test_une_cle_en_clair_dans_la_configuration_est_refusee(self):
+        """La configuration reste versionnable : elle ne porte jamais de secret."""
+        for champ in ("cle", "api_key", "token", "key"):
+            with self.assertRaises(ConfigurationInvalide, msg=champ):
+                routeur_depuis_config({"fournisseurs": [
+                    {"nom": "a", "modele": "m", "cle_env": "CLE_A", champ: "sk-secret"},
+                ]}, journal=lambda _: None, tolerant=False)
+
+    def test_protocole_inconnu_refuse(self):
+        with self.assertRaises(ConfigurationInvalide):
+            routeur_depuis_config({"fournisseurs": [
+                {"nom": "a", "protocole": "maison", "modele": "m", "cle_env": "CLE_A"},
+            ]}, journal=lambda _: None, tolerant=False)
+
+    def test_aucun_fournisseur_utilisable(self):
+        with self.assertRaises(ConfigurationInvalide):
+            routeur_depuis_config({"fournisseurs": [
+                {"nom": "absent", "modele": "m", "cle_env": "CLE_B"},
+            ]}, journal=lambda _: None)
+
+    def test_l_exemple_livre_est_une_configuration_valide(self):
+        chemin = os.path.join(RACINE, "routeur.example.json")
+        with open(chemin, encoding="utf-8") as f:
+            donnee = json.load(f)
+        self.assertTrue(donnee["fournisseurs"])
+        for entree in donnee["fournisseurs"]:
+            self.assertIn("cle_env", entree)
+            for interdit in ("cle", "api_key", "token", "key"):
+                self.assertNotIn(interdit, entree)
+
+
+class TestExtractionJson(unittest.TestCase):
+    def test_json_nu(self):
+        self.assertEqual(extraire_json('{"a": 1}'), {"a": 1})
+
+    def test_json_entoure_de_balises(self):
+        self.assertEqual(extraire_json('```json\n{"a": 1}\n```'), {"a": 1})
+
+    def test_json_precede_de_bavardage(self):
+        self.assertEqual(extraire_json('Voici :\n{"a": 1}\nVoilà.'), {"a": 1})
+
+    def test_absence_de_json_signalee(self):
+        with self.assertRaises(ErreurFournisseur):
+            extraire_json("désolé, je ne peux pas")
+
+    def test_le_protocole_anthropic_exige_une_cle(self):
+        with self.assertRaises(ErreurFournisseur):
+            AnthropicProvider(cle_api="").completer_json("c", "x")
+
+
+# --------------------------------------------------------------- diagnostic
+
+from ai.diagnostic import (  # noqa: E402
+    AUTH, ENDPOINT, INDISPONIBLE, MODELE, PROTOCOLE, QUOTA, VARIABLE, Constat,
+    verifier,
+)
+
+
+class FournisseurQuiEchoue(AIProvider):
+    def __init__(self, code=None, corps=""):
+        self.code, self.corps = code, corps
+
+    def completer_json(self, consigne, contexte):
+        raise ErreurFournisseur("échec simulé", code=self.code, corps=self.corps)
+
+
+class TestDiagnostic(unittest.TestCase):
+    """Un mauvais nom de modèle ne doit pas ressembler à un défaut du Builder."""
+
+    def test_fournisseur_operationnel(self):
+        constat = verifier("bon", FournisseurQuiRepond({"ok": True}))
+        self.assertTrue(constat.ok)
+
+    def test_cle_invalide_reconnue(self):
+        for code in (401, 403):
+            constat = verifier("x", FournisseurQuiEchoue(code))
+            self.assertEqual(constat.cause, AUTH)
+            self.assertFalse(constat.transitoire)
+
+    def test_modele_inconnu_distingue_du_point_d_entree(self):
+        """Le corps de la réponse nomme la cause ; le code seul ne suffit pas."""
+        modele = verifier("x", FournisseurQuiEchoue(404, "The model `xyz` does not exist"))
+        self.assertEqual(modele.cause, MODELE)
+        endpoint = verifier("x", FournisseurQuiEchoue(404, "Not Found"))
+        self.assertEqual(endpoint.cause, ENDPOINT)
+
+    def test_modele_inconnu_sur_400_aussi(self):
+        constat = verifier("x", FournisseurQuiEchoue(400, "unknown model name"))
+        self.assertEqual(constat.cause, MODELE)
+
+    def test_point_d_entree_injoignable(self):
+        constat = verifier("x", FournisseurQuiEchoue(None))
+        self.assertEqual(constat.cause, ENDPOINT)
+
+    def test_quota_et_panne_sont_transitoires(self):
+        """Rien à corriger dans le fichier : la configuration est bonne."""
+        self.assertTrue(verifier("x", FournisseurQuiEchoue(429)).transitoire)
+        self.assertTrue(verifier("x", FournisseurQuiEchoue(503)).transitoire)
+        self.assertEqual(verifier("x", FournisseurQuiEchoue(429)).cause, QUOTA)
+
+    def test_reponse_non_json_signalee_comme_protocole(self):
+        class Bavard(AIProvider):
+            def completer_json(self, consigne, contexte):
+                return "je ne suis pas un objet"
+
+        self.assertEqual(verifier("x", Bavard()).cause, PROTOCOLE)
+
+    def test_une_cle_absente_n_est_pas_presentee_comme_un_defaut(self):
+        ligne = Constat("local", False, VARIABLE, "LOCAL_LLM_KEY n'est pas définie").ligne()
+        self.assertIn("non configuré", ligne)
+        self.assertNotIn("à corriger", ligne)
+
+    def test_la_sonde_emprunte_le_chemin_reel(self):
+        """Un diagnostic qui passerait ailleurs ne prouverait rien."""
+        temoin = FournisseurQuiRepond({"ok": True})
+        verifier("x", temoin)
+        self.assertEqual(temoin.appels, 1)
+
+
+class TestTraceDuRouteur(unittest.TestCase):
+    """Sans trace, une acceptation verte n'est pas reproductible."""
+
+    def test_le_fournisseur_et_le_modele_sont_consignes(self):
+        routeur = RouterProvider(
+            etapes=[Etape("kimi", ScriptedProvider([{"ok": True}], modele="kimi-k3"))],
+            journal=lambda _: None,
+        )
+        routeur.completer_json("c", "x")
+        resume = routeur.resume()
+        self.assertEqual(resume["fournisseur"], "kimi")
+        self.assertEqual(resume["modele"], "kimi-k3")
+        self.assertEqual(resume["basculements"], 0)
+
+    def test_un_basculement_apparait_dans_la_trace(self):
+        routeur = RouterProvider(
+            etapes=[
+                Etape("premier", FournisseurEnPanne("503")),
+                Etape("second", ScriptedProvider([{"ok": True}], modele="gpt-x")),
+            ],
+            journal=lambda _: None,
+        )
+        routeur.completer_json("c", "x")
+        resume = routeur.resume()
+        self.assertEqual(resume["fournisseur"], "second")
+        self.assertEqual(resume["modele"], "gpt-x")
+        self.assertEqual(resume["basculements"], 1)
+        # Les deux passages figurent, sous le même numéro d'appel.
+        self.assertEqual([e["fournisseur"] for e in resume["trace"]], ["premier", "second"])
+        self.assertEqual({e["appel"] for e in resume["trace"]}, {1})
+
+    def test_les_corrections_successives_sont_comptees(self):
+        fautive = json.loads(json.dumps(MINIMAL))
+        fautive["technical_name"] = "INVALIDE"
+        correcte = json.loads(json.dumps(MINIMAL))
+        routeur = RouterProvider(
+            etapes=[Etape("a", ScriptedProvider([fautive, correcte], modele="m"))],
+            journal=lambda _: None,
+        )
+        redacteur = _Drafter(routeur, tentatives_max=2)
+        redacteur.draft("un besoin")
+        # Une tentative refusée puis une acceptée : une correction.
+        self.assertEqual(len(redacteur.tentatives), 2)
+        self.assertEqual(routeur.resume()["appels"], 2)
+
+    def test_la_trace_ne_contient_aucun_secret(self):
+        secrete = "sk-SECRET-QUI-NE-DOIT-PAS-APPARAITRE"
+        os.environ["CLE_POUR_TRACE"] = secrete
+        try:
+            routeur = routeur_depuis_config({"fournisseurs": [
+                {"nom": "a", "protocole": "openai",
+                 "url": "http://127.0.0.1:9/v1/chat/completions",
+                 "modele": "m", "cle_env": "CLE_POUR_TRACE"},
+            ]}, journal=lambda _: None)
+            with self.assertRaises(ErreurFournisseur):
+                routeur.completer_json("c", "x")
+            self.assertNotIn(secrete, json.dumps(routeur.resume(), ensure_ascii=False))
+            self.assertNotIn(secrete, "\n".join(routeur.incidents))
+        finally:
+            os.environ.pop("CLE_POUR_TRACE", None)
+
+
+# ------------------------------------------------------------- installation
+
+import shutil as _shutil  # noqa: E402
+
+from ai.installation import (  # noqa: E402
+    FOURNISSEURS, InstallationImpossible, declarer_fournisseur, ecrire_routeur,
+    ecrire_secrets, secret_installateur,
+)
+
+
+class TestInstallationGuidee(unittest.TestCase):
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.addCleanup(_shutil.rmtree, self.dossier, True)
+        self.ancien = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(self.dossier, "config")
+
+    def tearDown(self):
+        if self.ancien is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self.ancien
+
+    def test_les_secrets_sont_ecrits_hors_du_depot(self):
+        depot = os.path.join(self.dossier, "depot")
+        os.makedirs(depot)
+        chemin = ecrire_secrets({"MA_CLE": "sk-secrete"}, depot)
+        self.assertFalse(chemin.startswith(os.path.abspath(depot)))
+
+    def test_les_secrets_ne_sont_lisibles_que_par_leur_proprietaire(self):
+        depot = os.path.join(self.dossier, "depot")
+        os.makedirs(depot)
+        chemin = ecrire_secrets({"MA_CLE": "sk-secrete"}, depot)
+        self.assertEqual(oct(os.stat(chemin).st_mode)[-3:], "600")
+
+    def test_refus_d_ecrire_des_secrets_dans_le_depot(self):
+        depot = os.path.join(self.dossier, "depot")
+        os.makedirs(depot)
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(depot, "config")
+        with self.assertRaises(InstallationImpossible):
+            ecrire_secrets({"MA_CLE": "sk-secrete"}, depot)
+
+    def test_le_routeur_ecrit_ne_contient_aucune_cle(self):
+        chemin = os.path.join(self.dossier, "routeur.json")
+        ecrire_routeur([("kimi", "kimi-k3")], chemin)
+        brut = open(chemin, encoding="utf-8").read()
+        self.assertNotIn("sk-", brut)
+        donnee = json.loads(brut)
+        entree = donnee["fournisseurs"][0]
+        self.assertEqual(entree["cle_env"], "KIMI_API_KEY")
+        for interdit in ("cle", "api_key", "token", "key"):
+            self.assertNotIn(interdit, entree)
+
+    def test_le_routeur_ecrit_est_accepte_par_le_routeur(self):
+        """Ce que l'installation écrit doit être relisible sans retouche."""
+        chemin = os.path.join(self.dossier, "routeur.json")
+        ecrire_routeur([("kimi", "kimi-k3")], chemin)
+        os.environ["KIMI_API_KEY"] = "cle-de-test"
+        try:
+            routeur = routeur_depuis_config(
+                json.load(open(chemin, encoding="utf-8")), journal=lambda _: None
+            )
+            self.assertEqual(routeur.noms, ["kimi"])
+        finally:
+            os.environ.pop("KIMI_API_KEY", None)
+
+    def test_le_secret_du_service_est_compose_par_l_outil(self):
+        """Aucune raison de demander à l'utilisateur d'inventer une chaîne."""
+        a, b = secret_installateur(), secret_installateur()
+        self.assertNotEqual(a, b)
+        self.assertGreaterEqual(len(a), 32)
+
+    def test_chaque_fournisseur_propose_a_un_nom_de_variable(self):
+        for cle, details in FOURNISSEURS.items():
+            self.assertTrue(details["cle_env"], cle)
+            self.assertIn(details["protocole"], ("openai", "anthropic"))
+
+
+# ------------------------------------------------- diagnostic en ligne de commande
+
+sys.path.insert(0, os.path.join(RACINE, "cli"))
+import atelier_odoo  # noqa: E402
+
+
+class TestCommandeProviders(unittest.TestCase):
+    """Le diagnostic doit voir ce que le Builder utilise, pas autre chose.
+
+    Il réclamait un `routeur.json` alors que `fournisseur_configure` se rabat
+    sur l'environnement. Toute machine installée par `deployer/installer.sh` —
+    qui range la clé dans l'environnement sans écrire de fichier — se voyait
+    donc répondre « configuration introuvable » avec une clé parfaitement
+    valide.
+    """
+
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.anciennes = {
+            c: os.environ.get(c)
+            for c in ("BUILDER_IA_ROUTEUR", "BUILDER_IA_CLE", "BUILDER_IA_URL",
+                      "BUILDER_IA_MODELE", "OPENAI_API_KEY")
+        }
+        for c in self.anciennes:
+            os.environ.pop(c, None)
+        # Un chemin qui n'existe pas : le cas d'une machine sans routeur.
+        os.environ["BUILDER_IA_ROUTEUR"] = os.path.join(self.dossier, "routeur.json")
+
+        # Le diagnostic appelle le réseau ; on le remplace pour n'éprouver
+        # que la décision, et on retient ce qu'on lui a demandé de vérifier.
+        self.examinees = []
+        self.vrai_verifier = atelier_odoo.verifier_etapes
+
+        def faux_verifier(etapes, journal=None):
+            self.examinees = list(etapes)
+            return [Constat(e.nom, True, "OK") for e in etapes]
+
+        atelier_odoo.verifier_etapes = faux_verifier
+
+    def tearDown(self):
+        atelier_odoo.verifier_etapes = self.vrai_verifier
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_sans_routeur_la_cle_de_l_environnement_suffit(self):
+        os.environ["BUILDER_IA_CLE"] = "cle-de-test"
+        code = atelier_odoo.commande_providers(None)
+        self.assertEqual(code, 0)
+        self.assertEqual([e.nom for e in self.examinees], ["environnement"])
+
+    def test_sans_routeur_ni_cle_le_refus_nomme_les_deux_sources(self):
+        sortie = io.StringIO()
+        with contextlib.redirect_stdout(sortie):
+            code = atelier_odoo.commande_providers(None)
+        self.assertEqual(code, 2)
+        texte = sortie.getvalue()
+        self.assertIn("BUILDER_IA_CLE", texte)
+        self.assertIn("routeur", texte.lower())
+
+    def test_le_routeur_ecrit_prend_le_pas_sur_l_environnement(self):
+        chemin = os.environ["BUILDER_IA_ROUTEUR"]
+        ecrire_routeur([("kimi", "kimi-k3")], chemin)
+        os.environ["KIMI_API_KEY"] = "cle-de-test"
+        os.environ["BUILDER_IA_CLE"] = "autre-cle"
+        try:
+            code = atelier_odoo.commande_providers(None)
+        finally:
+            os.environ.pop("KIMI_API_KEY", None)
+        self.assertEqual(code, 0)
+        self.assertEqual([e.nom for e in self.examinees], ["kimi"])
+
+    def test_un_routeur_illisible_est_signale_et_non_contourne(self):
+        """Un fichier cassé est une erreur à corriger, pas à ignorer."""
+        chemin = os.environ["BUILDER_IA_ROUTEUR"]
+        with open(chemin, "w", encoding="utf-8") as f:
+            f.write("{ceci n'est pas du json")
+        os.environ["BUILDER_IA_CLE"] = "cle-de-test"
+        sortie = io.StringIO()
+        with contextlib.redirect_stdout(sortie):
+            code = atelier_odoo.commande_providers(None)
+        self.assertEqual(code, 2)
+        self.assertIn(chemin, sortie.getvalue())
+
+
+# --------------------------------------------------- à qui appartient la clé
+
+from ai.detection import accepte, detecter, fournisseur_pour  # noqa: E402
+from ai.diagnostic import OK  # noqa: E402
+
+
+class FournisseurQuiRefuseLaCle(AIProvider):
+    def completer_json(self, consigne, contexte):
+        raise ErreurFournisseur(
+            "401 Unauthorized — Incorrect API key provided", code=401,
+            corps="Incorrect API key provided",
+        )
+
+
+class FournisseurQuiIgnoreLeModele(AIProvider):
+    """Clé acceptée, modèle inconnu : le cas d'une table de modèles périmée."""
+
+    def completer_json(self, consigne, contexte):
+        raise ErreurFournisseur(
+            "404 Not Found — The model `kimi-k3` does not exist", code=404,
+            corps="The model `kimi-k3` does not exist",
+        )
+
+
+class TestDetectionDuFournisseur(unittest.TestCase):
+    """Une clé refusée par OpenAI peut être excellente ailleurs."""
+
+    TABLE = {
+        "openai": {"libelle": "OpenAI", "protocole": "openai",
+                   "url": "https://exemple.invalide/v1/chat/completions",
+                   "cle_env": "OPENAI_API_KEY", "modele_suggere": "gpt-5.6"},
+        "kimi": {"libelle": "Kimi / Moonshot", "protocole": "openai",
+                 "url": "https://exemple.invalide/v1/chat/completions",
+                 "cle_env": "KIMI_API_KEY", "modele_suggere": "kimi-k3"},
+    }
+
+    def test_un_refus_d_authentification_ecarte_le_fournisseur(self):
+        constat = verifier("openai", FournisseurQuiRefuseLaCle())
+        self.assertFalse(accepte(constat))
+
+    def test_un_modele_inconnu_prouve_que_la_cle_est_acceptee(self):
+        """Le serveur n'aurait pas examiné le modèle s'il refusait la clé."""
+        constat = verifier("kimi", FournisseurQuiIgnoreLeModele())
+        self.assertFalse(constat.ok)
+        self.assertTrue(accepte(constat))
+
+    def test_une_reponse_valide_vaut_acceptation(self):
+        constat = Constat("kimi", True, OK, "réponse JSON reçue")
+        self.assertTrue(accepte(constat))
+
+    def test_la_detection_essaie_tous_les_fournisseurs_dans_l_ordre(self):
+        essayes = []
+
+        def faux_verifier(nom, fournisseur):
+            essayes.append(nom)
+            return Constat(nom, False, AUTH, "401")
+
+        import ai.detection as detection
+        vrai = detection.verifier
+        detection.verifier = faux_verifier
+        try:
+            constats = detecter("sk-quelconque", table=self.TABLE)
+        finally:
+            detection.verifier = vrai
+        self.assertEqual(essayes, ["openai", "kimi"])
+        self.assertEqual(len(constats), 2)
+        self.assertFalse(any(accepte(c) for c in constats))
+
+    def test_le_client_construit_porte_la_cle_et_l_url_du_fournisseur(self):
+        client = fournisseur_pour(self.TABLE["kimi"], "sk-essai")
+        self.assertEqual(client.cle_api, "sk-essai")
+        self.assertEqual(client.url, self.TABLE["kimi"]["url"])
+        self.assertEqual(client.modele, "kimi-k3")
+
+    def test_le_protocole_anthropic_donne_un_client_anthropic(self):
+        details = {"libelle": "Anthropic", "protocole": "anthropic",
+                   "url": "https://exemple.invalide/v1/messages",
+                   "cle_env": "ANTHROPIC_API_KEY", "modele_suggere": "claude-sonnet-5"}
+        self.assertIsInstance(fournisseur_pour(details, "sk-essai"), AnthropicProvider)
+
+
+class TestDeclarationDuFournisseur(unittest.TestCase):
+    """Ce que « detect --adopter » écrit doit rester relisible et unique."""
+
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.chemin = os.path.join(self.dossier, "env")
+
+    def test_les_deux_lignes_sont_ecrites(self):
+        declarer_fournisseur("https://exemple.invalide/v1/chat/completions",
+                             "un-modele", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            contenu = f.read()
+        self.assertIn('export BUILDER_IA_URL="https://exemple.invalide/v1/chat/completions"',
+                      contenu)
+        self.assertIn('export BUILDER_IA_MODELE="un-modele"', contenu)
+
+    def test_la_cle_existante_est_conservee(self):
+        with open(self.chemin, "w", encoding="utf-8") as f:
+            f.write('export BUILDER_IA_CLE="sk-secret"\n')
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            contenu = f.read()
+        self.assertIn('export BUILDER_IA_CLE="sk-secret"', contenu)
+
+    def test_une_seconde_declaration_remplace_la_premiere(self):
+        """Deux « export BUILDER_IA_URL » rendraient tout diagnostic faux."""
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m1", self.chemin)
+        declarer_fournisseur("https://b.invalide/v1/chat/completions", "m2", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            contenu = f.read()
+        self.assertEqual(contenu.count("export BUILDER_IA_URL="), 1)
+        self.assertEqual(contenu.count("export BUILDER_IA_MODELE="), 1)
+        self.assertIn("b.invalide", contenu)
+        self.assertNotIn("a.invalide", contenu)
+
+    def test_le_fichier_reste_lisible_par_son_seul_proprietaire(self):
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m", self.chemin)
+        self.assertEqual(os.stat(self.chemin).st_mode & 0o777, 0o600)
+
+    def test_un_fichier_sans_saut_de_ligne_final_ne_colle_pas_les_lignes(self):
+        with open(self.chemin, "w", encoding="utf-8") as f:
+            f.write('export BUILDER_IA_CLE="sk-secret"')  # sans \n
+        declarer_fournisseur("https://a.invalide/v1/chat/completions", "m", self.chemin)
+        with open(self.chemin, encoding="utf-8") as f:
+            lignes = f.read().splitlines()
+        self.assertIn('export BUILDER_IA_CLE="sk-secret"', lignes)
+
+
+import acceptation  # noqa: E402
+
+
+class TestIdentifiantsOdoo(unittest.TestCase):
+    """Le compte qui éprouve le module n'est pas toujours « admin/admin ».
+
+    L'installeur remplace ce mot de passe dès que le port 8069 est ouvert.
+    Le supposer inchangé faisait échouer l'acceptation sur « Access Denied »
+    alors que le module était installé et correct : l'échec accusait la
+    fabrication, quand seule la connexion était en cause.
+    """
+
+    VARIABLES = ("ODOO_LOGIN", "ODOO_ADMIN_MOTDEPASSE", "ODOO_MOTDEPASSE")
+
+    def setUp(self):
+        self.anciennes = {c: os.environ.get(c) for c in self.VARIABLES}
+        for c in self.VARIABLES:
+            os.environ.pop(c, None)
+
+    def tearDown(self):
+        for c, v in self.anciennes.items():
+            if v is None:
+                os.environ.pop(c, None)
+            else:
+                os.environ[c] = v
+
+    def test_sans_rien_le_defaut_de_developpement(self):
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "admin"))
+
+    def test_le_mot_de_passe_de_l_installeur_est_pris(self):
+        os.environ["ODOO_ADMIN_MOTDEPASSE"] = "tirage-aleatoire"
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "tirage-aleatoire"))
+
+    def test_le_nom_utilise_par_docker_compose_convient_aussi(self):
+        os.environ["ODOO_MOTDEPASSE"] = "par-compose"
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "par-compose"))
+
+    def test_celui_de_l_installeur_l_emporte_sur_celui_de_compose(self):
+        os.environ["ODOO_ADMIN_MOTDEPASSE"] = "installeur"
+        os.environ["ODOO_MOTDEPASSE"] = "compose"
+        self.assertEqual(acceptation.identifiants_odoo()[1], "installeur")
+
+    def test_le_compte_peut_etre_autre_qu_admin(self):
+        os.environ["ODOO_LOGIN"] = "atelier"
+        self.assertEqual(acceptation.identifiants_odoo()[0], "atelier")
+
+    def test_une_valeur_vide_ne_remplace_pas_le_defaut(self):
+        """Une variable exportée vide est un oubli, pas un mot de passe vide."""
+        os.environ["ODOO_ADMIN_MOTDEPASSE"] = ""
+        self.assertEqual(acceptation.identifiants_odoo(), ("admin", "admin"))
+
+
+class TestRelationsEtDependances(unittest.TestCase):
+    """Une relation ne peut viser qu'un modèle réellement disponible.
+
+    Défaut observé en production : le modèle avait décrit un lien vers
+    « hr.employee » sans déclarer « hr » dans depends. Odoo n'a pas créé le
+    champ, puis la vue l'a réclamé, et l'installation a échoué sur
+    « Field employe_id does not exist in model mission.demande » — message qui
+    accuse la vue alors que la faute est dans le manifeste. La validation
+    statique laissait passer l'ensemble.
+    """
+
+    def _spec(self, depends, comodel):
+        return ModuleSpec.depuis_dict({
+            "technical_name": "gestion_missions", "name": "Gestion des missions",
+            "depends": depends,
+            "models": [{"name": "mission.demande", "description": "Demande",
+                "fields": [
+                    {"name": "name", "type": "char", "string": "Objet",
+                     "required": True},
+                    {"name": "employe_id", "type": "many2one", "string": "Employé",
+                     "comodel": comodel},
+                ]}],
+            "views": [{"model": "mission.demande", "type": "tree",
+                       "name": "Demandes", "fields": ["name", "employe_id"],
+                       "invisible_fields": []}],
+            "actions": [{"id": "a", "name": "Demandes", "model": "mission.demande",
+                         "view_modes": ["tree", "form"]}],
+            "menus": [{"id": "m", "name": "Missions", "action": "a"}],
+            "access": [{"model": "mission.demande", "group": "base.group_user"}],
+        })
+
+    def _rapport(self, depends, comodel="hr.employee"):
+        spec = self._spec(depends, comodel)
+        return OdooStaticValidator().check(
+            OdooModuleGenerator().generate(spec), spec
+        )
+
+    def test_relation_vers_un_module_non_declare_est_refusee(self):
+        rapport = self._rapport(["base"])
+        self.assertFalse(rapport.ok)
+        self.assertIn("hr", rapport.texte())
+
+    def test_la_meme_relation_passe_si_le_module_est_declare(self):
+        self.assertTrue(self._rapport(["base", "hr"]).ok)
+
+    def test_res_partner_ne_demande_que_base(self):
+        """« res.* » vient de « base » : exiger un module « res » serait faux."""
+        self.assertTrue(self._rapport(["base"], "res.partner").ok)
+
+    def test_ir_attachment_ne_demande_que_base(self):
+        self.assertTrue(self._rapport(["base"], "ir.attachment").ok)
+
+    def test_un_module_tiers_est_reconnu_par_son_prefixe(self):
+        self.assertFalse(self._rapport(["base"], "ansut.agent").ok)
+        self.assertTrue(self._rapport(["base", "ansut"], "ansut.agent").ok)
+
+    def test_une_relation_interne_au_module_ne_demande_rien(self):
+        """Un modèle créé par le module lui-même est toujours disponible."""
+        spec = ModuleSpec.depuis_dict({
+            "technical_name": "gestion_missions", "name": "Missions",
+            "depends": ["base"],
+            "models": [
+                {"name": "mission.demande", "description": "Demande", "fields": [
+                    {"name": "name", "type": "char", "string": "Objet"},
+                    {"name": "frais_ids", "type": "one2many", "string": "Frais",
+                     "comodel": "mission.frais", "inverse_name": "demande_id"},
+                ]},
+                {"name": "mission.frais", "description": "Frais", "fields": [
+                    {"name": "name", "type": "char", "string": "Libellé"},
+                    {"name": "demande_id", "type": "many2one", "string": "Demande",
+                     "comodel": "mission.demande"},
+                ]},
+            ],
+            "views": [{"model": "mission.demande", "type": "tree", "name": "D",
+                       "fields": ["name"], "invisible_fields": []}],
+            "actions": [{"id": "a", "name": "D", "model": "mission.demande",
+                         "view_modes": ["tree", "form"]}],
+            "menus": [{"id": "m", "name": "Missions", "action": "a"}],
+            "access": [{"model": "mission.demande", "group": "base.group_user"},
+                       {"model": "mission.frais", "group": "base.group_user"}],
+        })
+        rapport = OdooStaticValidator().check(
+            OdooModuleGenerator().generate(spec), spec
+        )
+        self.assertTrue(rapport.ok, rapport.texte())
+
+    def test_le_contrat_enonce_la_regle_au_modele(self):
+        """Le modèle doit connaître la règle avant, pas seulement après refus."""
+        from spec.drafter import CONTRAT
+        self.assertIn("hr.employee", CONTRAT)
+        self.assertIn("depends", CONTRAT)
+
+
+class FournisseurHttpSimule(OpenAIProvider):
+    """Un OpenAIProvider dont on choisit la réponse HTTP, sans réseau."""
+
+    def __init__(self, charge):
+        super().__init__(cle_api="sk-essai")
+        self.charge = charge
+
+    def completer_json(self, consigne, contexte):
+        import ai.provider as fournisseur_module
+        vrai = fournisseur_module.urllib.request.urlopen
+        classe = self.__class__
+
+        class Reponse:
+            def __init__(self, texte): self.texte = texte
+            def read(self): return self.texte.encode("utf-8")
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        fournisseur_module.urllib.request.urlopen = \
+            lambda *a, **k: Reponse(json.dumps(self.charge))
+        try:
+            return OpenAIProvider.completer_json(self, consigne, contexte)
+        finally:
+            fournisseur_module.urllib.request.urlopen = vrai
+
+
+def _reponse(contenu, finish_reason=None):
+    message = {"choices": [{"message": {"content": contenu}}]}
+    if finish_reason:
+        message["choices"][0]["finish_reason"] = finish_reason
+    return message
+
+
+class TestReponseDuFournisseur(unittest.TestCase):
+    """« response_format: json_object » n'est pas honoré partout.
+
+    Le chemin OpenAI faisait json.loads sur la réponse brute, quand le chemin
+    Anthropic passait par extraire_json. Un service qui enrobe son JSON de
+    ```json échouait donc sur « Expecting value: line 1 column 1 (char 0) » —
+    message qui ne dit rien de ce qui a été reçu, et qu'on a mis un tour
+    complet à comprendre.
+    """
+
+    def test_json_nu_est_lu(self):
+        f = FournisseurHttpSimule(_reponse('{"a": 1}'))
+        self.assertEqual(f.completer_json("c", "x"), {"a": 1})
+
+    def test_json_enrobe_de_balises_est_lu(self):
+        f = FournisseurHttpSimule(_reponse('```json\n{"a": 1}\n```'))
+        self.assertEqual(f.completer_json("c", "x"), {"a": 1})
+
+    def test_json_precede_d_une_phrase_est_lu(self):
+        f = FournisseurHttpSimule(_reponse('Voici la spécification :\n{"a": 1}'))
+        self.assertEqual(f.completer_json("c", "x"), {"a": 1})
+
+    def test_une_reponse_vide_le_dit(self):
+        f = FournisseurHttpSimule(_reponse(""))
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("réponse vide", str(capture.exception))
+
+    def test_l_erreur_montre_ce_qui_a_ete_recu(self):
+        f = FournisseurHttpSimule(_reponse("<html>Portail d'authentification</html>"))
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("html", str(capture.exception).lower())
+
+    def test_une_reponse_tronquee_nomme_la_cause(self):
+        """finish_reason distingue « le modèle a mal répondu » de « ça a coupé »."""
+        f = FournisseurHttpSimule(_reponse('{"a": 1', finish_reason="length"))
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("length", str(capture.exception))
+
+    def test_une_charge_sans_choices_montre_la_charge(self):
+        f = FournisseurHttpSimule({"error": {"message": "quota dépassé"}})
+        with self.assertRaises(ErreurFournisseur) as capture:
+            f.completer_json("c", "x")
+        self.assertIn("quota", str(capture.exception))
+
+
+class RuntimeSimule:
+    """Un Odoo de papier : retient les créations, répond aux recherches."""
+
+    def __init__(self, existants=()):
+        self.existants = set(existants)
+        self.crees = []
+
+    def appeler(self, modele, methode, args, kwargs=None):
+        if methode == "search":
+            return [7] if modele in self.existants else []
+        raise AssertionError(f"appel inattendu : {methode}")
+
+    def creer(self, modele, valeurs):
+        self.crees.append((modele, valeurs))
+        return 100 + len(self.crees)
+
+
+class TestValeursDuBancDEssai(unittest.TestCase):
+    """Un many2one attend un entier, pas « Recette d'acceptation ».
+
+    Le banc d'essai remplissait tout type inconnu avec une chaîne. PostgreSQL
+    rejetait l'insertion sur « invalid input syntax for type integer », et le
+    verdict accusait le module fabriqué alors que la faute était dans le test.
+    """
+
+    def _champ(self, **kw):
+        base = {"name": "x", "type": "char", "string": "X", "selection": []}
+        base.update(kw)
+        return Champ(**base)
+
+    def test_un_many2one_rend_l_identifiant_d_un_existant(self):
+        runtime = RuntimeSimule(existants={"res.currency"})
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="currency_id", type="many2one", comodel="res.currency"),
+            runtime, None,
+        )
+        self.assertEqual(valeur, 7)
+
+    def test_un_many2one_sans_existant_cree_dans_le_module(self):
+        runtime = RuntimeSimule()
+        spec = ModuleSpec.depuis_dict(MINIMAL)
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="objet_id", type="many2one", comodel="mon.objet"),
+            runtime, spec,
+        )
+        self.assertEqual(valeur, 101)
+        self.assertEqual(runtime.crees[0][0], "mon.objet")
+
+    def test_un_many2one_hors_module_et_sans_existant_est_omis(self):
+        """Mieux vaut ne pas remplir un champ que le remplir faux."""
+        runtime = RuntimeSimule()
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="employe_id", type="many2one", comodel="hr.employee"),
+            runtime, ModuleSpec.depuis_dict(MINIMAL),
+        )
+        self.assertIs(valeur, acceptation.SANS_VALEUR)
+
+    def test_une_selection_prend_sa_premiere_valeur(self):
+        champ = self._champ(name="etat", type="selection",
+                            selection=[["brouillon", "Brouillon"], ["fait", "Fait"]])
+        self.assertEqual(acceptation._valeur_exemple(champ), "brouillon")
+
+    def test_les_relations_multiples_partent_vides(self):
+        for type_ in ("one2many", "many2many"):
+            champ = self._champ(name="lignes", type=type_, comodel="mon.objet")
+            self.assertEqual(acceptation._valeur_exemple(champ), [])
+
+    def test_une_boucle_de_relations_ne_tourne_pas_sans_fin(self):
+        """Deux modèles qui se pointent l'un l'autre ne doivent pas boucler."""
+        runtime = RuntimeSimule()
+        spec = ModuleSpec.depuis_dict({
+            **json.loads(json.dumps(MINIMAL)),
+            "models": [{"name": "a.modele", "description": "A", "fields": [
+                {"name": "b_id", "type": "many2one", "string": "B",
+                 "comodel": "b.modele", "required": True}]},
+                {"name": "b.modele", "description": "B", "fields": [
+                    {"name": "a_id", "type": "many2one", "string": "A",
+                     "comodel": "a.modele", "required": True}]}],
+            "views": [], "actions": [], "menus": [],
+            "access": [{"model": "a.modele", "group": "base.group_user"},
+                       {"model": "b.modele", "group": "base.group_user"}],
+        })
+        valeur = acceptation._valeur_exemple(
+            self._champ(name="b_id", type="many2one", comodel="b.modele"),
+            runtime, spec,
+        )
+        # « a.modele » est créé en premier, sans le b_id qu'on renonce à
+        # remplir ; « b.modele » suit, en le pointant. Deux créations, et
+        # pas d'appels sans fin.
+        self.assertEqual([m for m, _ in runtime.crees], ["a.modele", "b.modele"])
+        self.assertEqual(valeur, 102)
+
+    def test_les_champs_calcules_ne_sont_jamais_fournis(self):
+        spec = ModuleSpec.depuis_dict(AVEC_COMPORTEMENT)
+        modele = spec.models[0]
+        valeurs = acceptation._valeurs_obligatoires(
+            RuntimeSimule(existants={"res.currency"}), spec, modele
+        )
+        self.assertNotIn("total", valeurs)
+
+
+class TestSecoursIllusoire(unittest.TestCase):
+    """Un fournisseur déclaré mais inutilisable n'est pas un secours.
+
+    Tant que le premier répond, personne ne s'en aperçoit ; le jour où il
+    tombe, le routeur bascule vers rien. « --exigeant » le fait dire avant
+    d'en avoir besoin, plutôt qu'au pire moment.
+    """
+
+    class Args:
+        def __init__(self, exigeant=False):
+            self.action = "check"
+            self.exigeant = exigeant
+            self.adopter = False
+
+    def setUp(self):
+        self.dossier = tempfile.mkdtemp()
+        self.ancien_routeur = os.environ.get("BUILDER_IA_ROUTEUR")
+        self.chemin = os.path.join(self.dossier, "routeur.json")
+        os.environ["BUILDER_IA_ROUTEUR"] = self.chemin
+        ecrire_routeur([("kimi", "kimi-k3"), ("openai", "gpt-4o")], self.chemin)
+        for nom in ("KIMI_API_KEY", "OPENAI_API_KEY"):
+            os.environ[nom] = "cle-de-test"
+        self.vrai = atelier_odoo.verifier_etapes
+
+    def tearDown(self):
+        atelier_odoo.verifier_etapes = self.vrai
+        for nom in ("KIMI_API_KEY", "OPENAI_API_KEY"):
+            os.environ.pop(nom, None)
+        if self.ancien_routeur is None:
+            os.environ.pop("BUILDER_IA_ROUTEUR", None)
+        else:
+            os.environ["BUILDER_IA_ROUTEUR"] = self.ancien_routeur
+
+    def _repondre(self, par_nom):
+        def faux(etapes, journal=None):
+            return [par_nom[e.nom] for e in etapes]
+        atelier_odoo.verifier_etapes = faux
+
+    def test_un_modele_inconnu_chez_le_secours_fait_echouer(self):
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", False, MODELE, "le modèle n'existe pas"),
+        })
+        sortie = io.StringIO()
+        with contextlib.redirect_stdout(sortie):
+            code = atelier_odoo.commande_providers(self.Args(exigeant=True))
+        self.assertEqual(code, 1)
+        self.assertIn("Secours illusoire", sortie.getvalue())
+
+    def test_sans_exigence_le_meme_cas_passe(self):
+        """Le comportement par défaut ne change pas : un fournisseur suffit."""
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", False, MODELE, "le modèle n'existe pas"),
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(atelier_odoo.commande_providers(self.Args()), 0)
+
+    def test_une_panne_passagere_n_est_pas_un_secours_casse(self):
+        """Un 503 se répare tout seul ; rien à corriger dans la configuration."""
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", False, INDISPONIBLE, "503", transitoire=True),
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = atelier_odoo.commande_providers(self.Args(exigeant=True))
+        self.assertEqual(code, 0)
+
+    def test_deux_fournisseurs_sains_passent(self):
+        self._repondre({
+            "kimi": Constat("kimi", True, OK),
+            "openai": Constat("openai", True, OK),
+        })
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(atelier_odoo.commande_providers(self.Args(exigeant=True)), 0)

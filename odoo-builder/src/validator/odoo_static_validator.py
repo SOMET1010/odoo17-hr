@@ -20,6 +20,24 @@ from xml.etree import ElementTree
 from spec.module_spec import ModuleSpec
 
 CLES_MANIFESTE = ("name", "version", "depends", "data", "license")
+
+# Le module qui fournit un modèle, quand son nom ne se déduit pas du préfixe.
+# Ailleurs, le préfixe est le module : « hr.employee » vient de « hr »,
+# « project.task » de « project ». Table volontairement courte : elle ne couvre
+# que les préfixes trompeurs, et un préfixe inconnu est traité comme un nom de
+# module — ce qui est le cas d'un module tiers.
+MODULE_DU_PREFIXE = {
+    "res": "base",      # res.partner, res.users, res.company, res.currency
+    "ir": "base",       # ir.ui.view, ir.model.access, ir.attachment
+    "decimal": "base",  # decimal.precision
+}
+
+
+def module_fournisseur(comodel: str) -> str:
+    """Le module Odoo qui déclare ce modèle, d'après son nom."""
+    prefixe = comodel.split(".")[0]
+    return MODULE_DU_PREFIXE.get(prefixe, prefixe)
+
 # Repère les champs cités dans un domaine : [('company_id', '=', ...)]
 CHAMPS_DU_DOMAINE = re.compile(r"[('\"]([a-z][a-z0-9_]*)['\"]\s*,\s*['\"]?(?:=|!=|in|not in|like|ilike|<|>)")
 
@@ -61,9 +79,48 @@ class OdooStaticValidator:
         if manifeste:
             anomalies += self._donnees_declarees(fichiers, racine, manifeste)
         anomalies += self._droits(fichiers, spec, racine)
+        anomalies += self._relations(spec, racine)
         anomalies += self._vues(fichiers, spec)
 
         return Rapport(anomalies)
+
+    # ------------------------------------------------------------- relations
+
+    def _relations(self, spec: ModuleSpec, racine: str) -> list[Anomalie]:
+        """Une relation ne peut viser qu'un modèle réellement disponible.
+
+        Défaut observé en production : le modèle avait décrit un lien vers
+        « hr.employee » sans déclarer « hr » dans depends. Odoo n'ayant pas
+        chargé ce module, il n'a pas créé le champ ; puis la vue l'a réclamé et
+        l'installation a échoué sur « Field employe_id does not exist in model
+        mission.demande » — message qui désigne la vue, alors que la faute est
+        dans les dépendances, trois fichiers plus loin.
+
+        Le contrôle est délibérément syntaxique : connaître tous les modèles
+        d'Odoo demanderait un Odoo. Le nom suffit, parce qu'un modèle appartient
+        toujours au module dont il porte le préfixe.
+        """
+        anomalies = []
+        crees = {m.name for m in spec.modeles_nouveaux}
+        declares = set(spec.depends)
+
+        for modele in spec.models:
+            for champ in modele.fields:
+                if not champ.comodel or champ.comodel in crees:
+                    continue
+                fournisseur = module_fournisseur(champ.comodel)
+                if fournisseur in declares:
+                    continue
+                anomalies.append(
+                    Anomalie(
+                        f"{racine}/__manifest__.py",
+                        f"« {modele.name}.{champ.name} » pointe vers "
+                        f"« {champ.comodel} », fourni par le module "
+                        f"« {fournisseur} » qui n'est pas dans depends "
+                        f"{sorted(declares)} : Odoo ne créera pas ce champ",
+                    )
+                )
+        return anomalies
 
     # ------------------------------------------------------------- structure
 
