@@ -16,6 +16,10 @@
 #   --public                interface ouverte en clair, sans chiffrement.
 #   --prive                 rien d'ouvert ; accès par tunnel SSH.
 #
+#   --addons-entreprise CHEMIN   dossier d'addons Odoo Enterprise, HORS du
+#                                dépôt. Sous OEEL-1 : jamais versionnés, jamais
+#                                copiés dans une image.
+#
 # Dans tous les cas le service d'installation reste sur 127.0.0.1 : il reçoit
 # des archives et installe du code, il n'a rien à faire sur Internet.
 
@@ -25,6 +29,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 MODE=""        # https | http | ferme
 DOMAINE=""
 COURRIEL=""
+ENTREPRISE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --https)    MODE="https"; shift ;;
@@ -32,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --courriel) COURRIEL="${2:-}"; shift 2 ;;
     --public)   MODE="http";  shift ;;
     --prive)    MODE="ferme"; shift ;;
+    --addons-entreprise) ENTREPRISE="${2:-}"; shift 2 ;;
     *) printf 'Option inconnue : %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -183,6 +189,23 @@ if [[ -z "$MODE" ]]; then
   esac
 fi
 
+# Les modules Enterprise sont sous OEEL-1 : leur redistribution est interdite.
+# Un dossier situé DANS le dépôt finirait tôt ou tard dans un commit, et le
+# dépôt est publiable. On refuse avant, pas après.
+if [[ -n "$ENTREPRISE" ]]; then
+  reel=$(readlink -f "$ENTREPRISE" 2>/dev/null || echo "")
+  depot=$(readlink -f . 2>/dev/null || echo ".")
+  if [[ -z "$reel" || ! -d "$reel" ]]; then
+    fatal "dossier d'addons Enterprise introuvable : $ENTREPRISE"
+  fi
+  if [[ "$reel" == "$depot"/* || "$reel" == "$depot" ]]; then
+    fatal "refus : « $reel » est dans le dépôt. Ces modules ne doivent jamais y entrer."
+  fi
+  nombre=$(find "$reel" -maxdepth 2 -name "__manifest__.py" 2>/dev/null | wc -l)
+  ok "addons Enterprise : $reel ($nombre module(s) détecté(s))"
+  (( nombre > 0 )) || avert "aucun manifeste trouvé — le chemin pointe-t-il sur le bon dossier ?"
+fi
+
 BIND_ODOO="127.0.0.1"
 PROFILS=(--profile installateur)
 ODOO_OPTIONS=""
@@ -228,6 +251,7 @@ umask 077
   echo "INSTALLATEUR_CLE_API=$INSTALLATEUR_CLE_API"
   echo "ODOO_ADMIN_MOTDEPASSE=$ODOO_ADMIN_MOTDEPASSE"
   echo "ODOO_OPTIONS=$ODOO_OPTIONS"
+  [[ -n "$ENTREPRISE" ]] && echo "ADDONS_ENTREPRISE=$ENTREPRISE"
   [[ -n "$DOMAINE" ]] && echo "ATELIER_DOMAINE=$DOMAINE"
   # Directive complète, ou rien : « email » sans argument empêche Caddy
   # de démarrer, et une variable définie mais vide ne prend aucun défaut.

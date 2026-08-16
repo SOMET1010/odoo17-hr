@@ -124,6 +124,38 @@ désactive la vérification ne prouve pas le chiffrement, elle prouve qu'un
 serveur répond. Un contrôle s'assure d'ailleurs que la connexion échoue bien
 quand on retire cette racine.
 
+## Utiliser des modules Odoo Enterprise
+
+Les modules Enterprise sont sous licence **`OEEL-1`**, qui interdit leur
+redistribution. Ce dépôt est publiable ; ils ne le sont pas. Ils ne doivent
+donc **jamais** y entrer, ni être copiés dans une image Docker.
+
+L'Atelier les utilise sans jamais les détenir : un dossier de la machine, monté
+en lecture seule.
+
+```bash
+bash deployer/installer.sh --https --addons-entreprise /opt/odoo-entreprise
+```
+
+L'installeur **refuse un chemin situé dans le dépôt** — ce serait le premier
+pas vers un commit accidentel — et compte les manifestes trouvés pour dire tout
+de suite si le chemin désigne le bon dossier.
+
+Sans cette option, un dossier vide occupe la place : le chemin `/mnt/entreprise`
+existe toujours, et Odoo démarre normalement chez qui n'a pas d'abonnement.
+
+### Ce que ça change, et ce que ça ne change pas
+
+Avec ces addons, le bac à sable peut installer et éprouver des modules qui
+**étendent** des modèles Enterprise. Sans eux, il ne connaît que l'édition
+communautaire, et un module qui hérite de `sign.request` échouera à
+l'installation — faute que rien d'autre ne saurait expliquer.
+
+En revanche la forge, elle, ne les aura jamais : ses journaux sont publics et y
+téléverser du code sous OEEL-1 serait le publier. Les recettes automatiques
+restent donc en édition communautaire, et ce qui dépend d'Enterprise se vérifie
+sur votre serveur. C'est une limite assumée, pas un oubli.
+
 ## Jouer le test d'acceptation
 
 C'est le seul maillon qu'aucun test automatique ne couvre : l'appel réel au

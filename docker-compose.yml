@@ -51,6 +51,11 @@ services:
       # Les modules déposés par le service d'installation. Volume distinct des
       # sources Git, et monté en lecture seule ici : seul le service écrit.
       - addons-installes:/mnt/addons-installes:ro
+      # Addons Odoo Enterprise, quand on en dispose. Sous licence OEEL-1 : ils
+      # ne sont ni versionnés ni copiés dans une image, seulement montés depuis
+      # un dossier de la machine, en lecture seule. À défaut, un dossier vide
+      # du dépôt occupe la place, pour que le chemin existe toujours.
+      - ${ADDONS_ENTREPRISE:-./.docker/entreprise-absente}:/mnt/entreprise:ro
       - ./.docker/odoo.conf:/etc/odoo/odoo.conf:ro
     restart: unless-stopped
 

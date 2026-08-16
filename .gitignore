@@ -8,3 +8,10 @@ odoo-builder/routeur.json
 
 __pycache__/
 *.pyc
+
+# Addons Odoo Enterprise (OEEL-1) : leur redistribution est interdite et ce
+# dépôt est publiable. Ils se montent depuis un dossier hors du dépôt ; ces
+# motifs ne sont qu'un filet, l'installeur refuse déjà un chemin interne.
+enterprise/
+entreprise/
+odoo-enterprise/
