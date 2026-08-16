@@ -36,14 +36,25 @@ fait plus tout recommencer. La spécification est gardée, jamais le module
 engendré — celui-ci se régénère, et le régénérer garantit qu'il porte les
 corrections apportées au générateur depuis.
 
-UN SEUL POSTE, ENCORE. Il n'y a ni comptes ni droits : deux personnes sur la
-même instance verraient les mêmes projets. C'est la prochaine marche, et elle
-va de pair avec la mise en ligne — dont l'authentification est la condition.
+CHACUN CHEZ SOI. Les projets appartiennent à un compte, et le filtre est dans
+le SQL — pas dans le Python, qu'on peut oublier d'appliquer. Sur un poste
+personnel sans compte, ils appartiennent au « poste » et rien ne demande de
+mot de passe : exiger une phrase secrète pour un outil qui n'écoute que
+127.0.0.1 ferait choisir « azerty » à tout le monde. Dès qu'un compte existe,
+ou dès que l'écoute est ouverte, la connexion devient obligatoire.
+
+EN LIGNE. « --ouvert » écoute sur toutes les interfaces, et alors :
+l'authentification est exigée d'emblée ; la conversion PAR CHEMIN est fermée,
+puisque le chemin désignerait un dossier du serveur et non du poste — on
+dépose une archive ; et la création du premier compte demande un code
+d'installation (ATELIER_INSCRIPTION), sans quoi le premier visiteur venu
+deviendrait administrateur. Voir docker-compose.atelier.yml.
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
 import io
 import json
 import os
@@ -427,9 +438,17 @@ class Poignee(BaseHTTPRequestHandler):
         taille = int(self.headers.get("Content-Length") or 0)
         brut = self.rfile.read(taille) if taille else b"{}"
         try:
-            return json.loads(brut or b"{}")
-        except json.JSONDecodeError:
+            donnee = json.loads(brut or b"{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # UnicodeDecodeError, et pas seulement JSONDecodeError : un corps
+            # BINAIRE lève la première, qui n'hérite pas de la seconde. Sans
+            # elle, un envoi de fichier arrivé sur une route JSON tuait la
+            # connexion — le navigateur ne voyait aucune réponse, seulement un
+            # échec de réseau, et rien n'indiquait où chercher.
             return {}
+        # Un corps JSON valide mais qui n'est pas un objet — « [] », « 12 » —
+        # ferait échouer chaque « .get » plus loin, très loin d'ici.
+        return donnee if isinstance(donnee, dict) else {}
 
     # ------------------------------------------------------------------ GET
 
@@ -444,6 +463,9 @@ class Poignee(BaseHTTPRequestHandler):
                 "compte": self.compte.en_dict() if self.compte else None,
                 "comptes_existants": bool(self.atelier.comptes.combien()),
                 "ouvert": self.server.ouvert,
+                # Ne dit PAS le code, seulement qu'il en faut un.
+                "code_requis": bool(self.server.ouvert
+                                    and not self.atelier.comptes.combien()),
                 "fournisseur": fournisseur_configure(None) is not None,
                 "cibles": list(CIBLES),
                 "courant": self.atelier.courant,
@@ -481,10 +503,18 @@ class Poignee(BaseHTTPRequestHandler):
     # ----------------------------------------------------------------- POST
 
     def do_POST(self):                                   # noqa: N802
-        donnee = self._corps()
         chemin = self.path.split("?")[0]
         identifie = self._identifier()
 
+        # AVANT toute lecture du corps : un envoi de fichier est binaire, et
+        # « _corps » le consommerait pour tenter d'y lire du JSON. Le corps
+        # n'est lu qu'une fois — celui qui le lit le premier le garde.
+        if chemin == "/televerser":
+            if not identifie:
+                return self._json(401, {"erreur": "connexion requise"})
+            return self._televerser()
+
+        donnee = self._corps()
         if chemin == "/connexion":
             return self._connecter(donnee)
         if chemin == "/inscription":
@@ -623,8 +653,20 @@ class Poignee(BaseHTTPRequestHandler):
         faudrait un compte pour créer le premier compte. Après quoi
         l'inscription se referme — une instance en ligne dont n'importe qui
         peut se créer un accès n'est pas protégée.
+
+        EN LIGNE, CETTE EXCEPTION EST UNE COURSE. Le certificat obtenu,
+        l'adresse est joignable : le premier arrivé devient administrateur, et
+        rien ne dit que ce sera vous. On exige donc un code d'installation,
+        tiré au sort par l'installeur et affiché sur la console du serveur.
+        Sans ce code, l'inscription est refusée plutôt qu'ouverte : une
+        instance qu'on n'arrive pas à amorcer se répare, une instance prise
+        par un inconnu, non.
         """
         premier = self.atelier.comptes.combien() == 0
+        if premier and self.server.ouvert:
+            motif = self._motif_de_refus_a_l_amorcage(donnee)
+            if motif:
+                return self._json(403, {"erreur": motif})
         if not premier and not (self.compte and self.compte.administrateur):
             return self._json(403, {
                 "erreur": "Seul un administrateur peut créer un compte."})
@@ -642,6 +684,27 @@ class Poignee(BaseHTTPRequestHandler):
             self.atelier.compte = compte.id
             self._poser_cookie(jeton)
         return self._json(200, {"compte": compte.en_dict(), "premier": premier})
+
+    @staticmethod
+    def _motif_de_refus_a_l_amorcage(donnee: dict) -> str:
+        """Rend le motif du refus, ou une chaîne vide si le code est bon.
+
+        Un MOTIF, et non une réponse déjà envoyée : « _json » ne rend rien, si
+        bien qu'un appelant qui écrirait « if refus is not None » ne verrait
+        jamais le refus. C'est exactement ce qui s'est produit ici — le 403
+        partait vers le navigateur ET le compte se créait derrière. Une
+        fonction qui décide ne doit pas, en même temps, répondre.
+        """
+        attendu = os.environ.get("ATELIER_INSCRIPTION", "").strip()
+        if not attendu:
+            return ("Cette instance est en ligne et n'a pas de code "
+                    "d'installation. Définissez ATELIER_INSCRIPTION sur le "
+                    "serveur, puis rechargez cette page.")
+        # Temps constant, comme pour un mot de passe : la durée de la
+        # comparaison dirait combien de caractères sont déjà justes.
+        if not hmac.compare_digest((donnee.get("code") or "").strip(), attendu):
+            return "Code d'installation incorrect."
+        return ""
 
     @staticmethod
     def _expiration() -> str:

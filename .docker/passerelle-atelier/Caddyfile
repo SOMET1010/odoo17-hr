@@ -1,0 +1,50 @@
+# Passerelle de l'Atelier en ligne : le seul point d'entrée.
+#
+# Elle existe pour deux raisons, dans cet ordre :
+#
+#   1. Un mot de passe qui voyage en clair est un mot de passe public. Et le
+#      cookie de session ne porte l'attribut « Secure » que si l'Atelier se
+#      sait derrière HTTPS — ce que dit X-Forwarded-Proto, posé par Caddy.
+#   2. Ce qui n'a pas de route ici n'est pas joignable. L'interface ne publie
+#      aucun port : il n'existe aucun second chemin, en clair, que rien ne
+#      surveillerait.
+#
+# Sur « localhost », Caddy signe avec son autorité interne. La recette éprouve
+# donc exactement ce chemin, certificat vérifié avec sa racine, sans dépendre
+# de Let's Encrypt ni d'un nom public.
+
+{
+	# Vaut soit rien, soit « email quelquun@exemple.fr ». La directive entière
+	# vit dans la variable : « {$VAR:défaut} » ne prend son défaut que si la
+	# variable est ABSENTE, et docker compose la définit vide.
+	{$ATELIER_ACME_EMAIL}
+	admin off
+}
+
+{$ATELIER_DOMAINE:localhost} {
+	encode zstd gzip
+
+	# Une archive de module déposée peut peser quelques dizaines de mégaoctets ;
+	# l'Atelier plafonne de son côté à 40 Mio DÉCOMPRESSÉS. Ce plafond-ci
+	# porte sur ce qui entre, et évite qu'un envoi démesuré occupe le service.
+	request_body {
+		max_size 50MB
+	}
+
+	reverse_proxy atelier-web:8100
+
+	header {
+		# Une fois le site vu en HTTPS, le navigateur refuse d'y revenir en
+		# clair — ce qui rend aussi tout repli accidentel visible.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}

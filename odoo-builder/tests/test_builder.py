@@ -2808,3 +2808,288 @@ class TestArchiveRecue(unittest.TestCase):
         }), "19.0")
         self.assertEqual(resultat["cible"], "19.0")
         self.assertTrue(resultat["valide"])
+
+
+class TestAtelierEnLigne(unittest.TestCase):
+    """L'Atelier tel qu'il tournera en ligne, éprouvé par le vrai serveur HTTP.
+
+    Les contrôles précédents appellent la classe « Atelier » directement. Ceux
+    d'ici passent par le serveur, parce que c'est là que vivent les décisions
+    qui comptent une fois l'adresse publique : qui a le droit d'entrer, quel
+    corps de requête est lu, et par quelle route.
+
+    Cette distinction n'est pas théorique — elle a fait apparaître un défaut
+    réel : « /televerser » n'était routée nulle part, et le corps binaire d'un
+    envoi de fichier était décodé en JSON avant tout aiguillage. La connexion
+    mourait sans réponse. La classe « Atelier », elle, convertissait très bien
+    l'archive qu'on lui passait à la main.
+    """
+
+    CODE = "code-de-recette-jetable"
+
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        os.environ["ATELIER_DEPOT"] = os.path.join(self._dossier.name, "a.sqlite")
+        os.environ["ATELIER_INSCRIPTION"] = self.CODE
+
+        import atelier
+        # La poignée porte son Atelier en attribut de CLASSE : on le remplace
+        # pour que chaque test parte d'un dépôt vierge, et on le remet après.
+        ancien = atelier.Poignee.atelier
+        atelier.Poignee.atelier = atelier.Atelier()
+        self.addCleanup(setattr, atelier.Poignee, "atelier", ancien)
+
+        # LA RÉPONSE N'EST PAS LA FIN DU TRAITEMENT. Le serveur peut répondre
+        # puis continuer à travailler — et c'est précisément ce que faisait le
+        # défaut qu'on éprouve ici : un 403 envoyé, puis le compte créé
+        # derrière. Une recette qui interroge la base dès qu'elle a la réponse
+        # regarde trop tôt, ne voit rien, et déclare l'instance protégée.
+        # « finish » est appelé quand la poignée a réellement terminé.
+        fini = threading.Event()
+
+        class Suivi(atelier.Poignee):
+            def finish(self):
+                try:
+                    super().finish()
+                finally:
+                    fini.set()
+
+        self.fini = fini
+
+        # Port 0 : le système en attribue un libre. Un port fixe fait échouer
+        # la recette quand une exécution précédente n'a pas fini de le rendre.
+        self.serveur = ThreadingHTTPServer(("127.0.0.1", 0), Suivi)
+        self.serveur.ouvert = True            # exactement la posture en ligne
+        self.adresse = f"http://127.0.0.1:{self.serveur.server_address[1]}"
+        fil = threading.Thread(target=self.serveur.serve_forever, daemon=True)
+        fil.start()
+        # Dans cet ordre : arrêter la boucle, attendre le fil, PUIS fermer la
+        # socket d'écoute. Un fil qui survit au test suivant sert une requête
+        # avec le dépôt du précédent — déjà effacé — et fait apparaître une
+        # erreur SQLite sans rapport avec ce qu'on éprouve.
+        self.addCleanup(self.serveur.server_close)
+        self.addCleanup(fil.join, 5)
+        self.addCleanup(self.serveur.shutdown)
+        self.jeton = ""
+
+    # ------------------------------------------------------------- outils
+
+    def _appel(self, chemin, donnee=None, brut=None, type_mime=None):
+        import urllib.error
+        import urllib.request
+        corps = brut
+        if donnee is not None:
+            corps = json.dumps(donnee).encode("utf-8")
+            type_mime = "application/json"
+        requete = urllib.request.Request(
+            self.adresse + chemin, data=corps,
+            method="POST" if corps is not None else "GET")
+        # Sans cela, la connexion persistante laisse un fil du serveur en
+        # attente d'une requête qui ne viendra pas — jusqu'au test suivant.
+        requete.add_header("Connection", "close")
+        if type_mime:
+            requete.add_header("Content-Type", type_mime)
+        if self.jeton:
+            requete.add_header("Cookie", f"atelier={self.jeton}")
+        self.fini.clear()
+        try:
+            reponse = urllib.request.urlopen(requete, timeout=30)
+        except urllib.error.HTTPError as erreur:
+            reponse = erreur
+        entetes = reponse.headers
+        lu = reponse.read()
+        reponse.close()
+        # On n'observe rien tant que la poignée n'a pas fini.
+        self.assertTrue(self.fini.wait(30), "la poignée n'a jamais terminé")
+        biscuit = entetes.get("Set-Cookie") or ""
+        if biscuit.startswith("atelier=") and "Max-Age=0" not in biscuit:
+            self.jeton = biscuit.split("=", 1)[1].split(";")[0]
+        try:
+            return reponse.status, json.loads(lu), biscuit
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return reponse.status, lu, biscuit
+
+    def _premier_compte(self, code=None):
+        return self._appel("/inscription", {
+            "nom": "pierre", "motdepasse": "une-phrase-dont-je-me-souviens",
+            "code": self.CODE if code is None else code})
+
+    def _archive(self) -> bytes:
+        tampon = io.BytesIO()
+        with zipfile.ZipFile(tampon, "w") as z:
+            z.writestr("recu/__manifest__.py",
+                       "{'name':'Reçu','version':'17.0.1.0.0','depends':['base'],"
+                       "'data':[],'license':'LGPL-3'}")
+            z.writestr("recu/__init__.py", "from . import models")
+            z.writestr("recu/models/__init__.py", "from . import chose")
+            z.writestr("recu/models/chose.py",
+                       "from odoo import fields, models\n\n\n"
+                       "class Chose(models.Model):\n    _name = 'recu.chose'\n"
+                       "    _description = 'Chose'\n"
+                       "    name = fields.Char('Nom', required=True)\n")
+        return tampon.getvalue()
+
+    @staticmethod
+    def _multipart(archive: bytes, cible: str = "17.0"):
+        f = "----recette"
+        corps = (
+            f"--{f}\r\nContent-Disposition: form-data; name=\"cible\"\r\n\r\n"
+            f"{cible}\r\n--{f}\r\nContent-Disposition: form-data; "
+            f"name=\"fichier\"; filename=\"m.zip\"\r\n"
+            f"Content-Type: application/zip\r\n\r\n"
+        ).encode("utf-8") + archive + f"\r\n--{f}--\r\n".encode("utf-8")
+        return corps, f"multipart/form-data; boundary={f}"
+
+    # -------------------------------------------------- la course au premier
+
+    def test_le_premier_compte_exige_le_code_d_installation(self):
+        """Sans lui, le premier visiteur venu devient administrateur.
+
+        Le certificat obtenu, l'adresse est joignable. Rien ne garantit que
+        celui qui arrive en premier soit le propriétaire de l'instance.
+        """
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "intrus", "motdepasse": "motdepasse-tres-long"})
+        self.assertEqual(code, 403)
+        self.assertIn("installation", donnee["erreur"].lower())
+        self._aucun_compte_cree("intrus")
+
+    def test_un_mauvais_code_ne_passe_pas(self):
+        code, _, _ = self._premier_compte(code="au-hasard")
+        self.assertEqual(code, 403)
+        self._aucun_compte_cree("pierre")
+
+    def _aucun_compte_cree(self, nom):
+        """Le code du refus ne suffit pas : on regarde ce qui est en base.
+
+        Un défaut réel s'est caché exactement là. Le 403 partait bien vers le
+        navigateur — parce que la fonction qui décidait répondait aussi, et
+        rendait « None » — et le compte se créait derrière, administrateur.
+        La recette qui ne lisait que le code de réponse déclarait l'instance
+        protégée alors que le premier venu venait d'en prendre la main.
+        """
+        import atelier as module
+        self.assertIsNone(module.Poignee.atelier.comptes.compte(nom))
+        self.assertEqual(module.Poignee.atelier.comptes.combien(), 0)
+        _, sante, _ = self._appel("/sante")
+        self.assertFalse(sante["comptes_existants"])
+
+    def test_le_bon_code_ouvre_une_seule_fois(self):
+        code, donnee, biscuit = self._premier_compte()
+        self.assertEqual(code, 200)
+        self.assertEqual(donnee["compte"]["role"], "administrateur")
+        # Le jeton ne doit jamais être lisible par le JavaScript de la page.
+        self.assertIn("HttpOnly", biscuit)
+        self.assertIn("SameSite=Lax", biscuit)
+        # Le code a servi : il ne doit plus rien ouvrir. Sinon quiconque le
+        # récupère plus tard se crée un compte sur une instance en service.
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "second", "motdepasse": "motdepasse-tres-long",
+            "code": self.CODE})
+        self.assertEqual(code, 200)         # l'administrateur est connecté
+        self.assertEqual(donnee["compte"]["role"], "membre")
+        self.jeton = ""                      # et maintenant, sans session :
+        code, _, _ = self._appel("/inscription", {
+            "nom": "troisieme", "motdepasse": "motdepasse-tres-long",
+            "code": self.CODE})
+        self.assertEqual(code, 403)
+
+    def test_sans_code_configure_l_inscription_est_refusee(self):
+        """Fermé plutôt qu'ouvert : une instance qu'on n'amorce pas se répare.
+
+        Une instance prise par un inconnu, non.
+        """
+        os.environ.pop("ATELIER_INSCRIPTION")
+        self.addCleanup(os.environ.__setitem__, "ATELIER_INSCRIPTION", self.CODE)
+        code, donnee, _ = self._premier_compte()
+        self.assertEqual(code, 403)
+        self.assertIn("ATELIER_INSCRIPTION", donnee["erreur"])
+
+    def test_sante_dit_qu_un_code_est_requis_sans_jamais_le_dire(self):
+        _, donnee, _ = self._appel("/sante")
+        self.assertTrue(donnee["code_requis"])
+        self.assertNotIn(self.CODE, json.dumps(donnee))
+        self._premier_compte()
+        _, donnee, _ = self._appel("/sante")
+        self.assertFalse(donnee["code_requis"])
+
+    # ------------------------------------------------------------ la porte
+
+    def test_un_anonyme_n_atteint_aucune_route_de_travail(self):
+        self._premier_compte()
+        self.jeton = ""
+        for chemin in ("/projets", "/apercu.html", "/module.zip"):
+            code, _, _ = self._appel(chemin)
+            self.assertEqual(code, 401, f"{chemin} devrait exiger une session")
+        corps, mime = self._multipart(self._archive())
+        code, _, _ = self._appel("/televerser", brut=corps, type_mime=mime)
+        self.assertEqual(code, 401)
+
+    def test_la_conversion_par_chemin_est_fermee_en_ligne(self):
+        """Le chemin désignerait un dossier du SERVEUR, pas du poste."""
+        self._premier_compte()
+        code, donnee, _ = self._appel("/convertir", {"chemin": "/etc",
+                                                     "cible": "17.0"})
+        self.assertEqual(code, 403)
+        self.assertIn("archive", donnee["erreur"])
+
+    # -------------------------------------------------------- le dépôt de ZIP
+
+    def test_une_archive_deposee_devient_un_projet_puis_un_module(self):
+        """Le chemin complet, par le serveur : dépôt, liste, archive."""
+        self._premier_compte()
+        corps, mime = self._multipart(self._archive())
+        code, donnee, _ = self._appel("/televerser", brut=corps, type_mime=mime)
+        self.assertEqual(code, 200, donnee)
+        self.assertEqual(donnee["technique"], "recu")
+        self.assertTrue(donnee["valide"])
+
+        _, liste, _ = self._appel("/projets")
+        self.assertEqual(len(liste["projets"]), 1)
+
+        code, archive, _ = self._appel("/module.zip")
+        self.assertEqual(code, 200)
+        with zipfile.ZipFile(io.BytesIO(archive)) as z:
+            self.assertIn("recu/__manifest__.py", z.namelist())
+
+    def test_un_corps_binaire_sur_une_route_json_ne_tue_pas_la_connexion(self):
+        """Le défaut qui a motivé cette classe.
+
+        Un corps binaire lève UnicodeDecodeError, qui n'hérite PAS de
+        JSONDecodeError. La requête mourait sans réponse : le navigateur ne
+        voyait qu'un échec de réseau, sans rien qui dise où chercher.
+        """
+        self._premier_compte()
+        code, donnee, _ = self._appel(
+            "/concevoir", brut=b"\x89PNG\r\n\x1a\n\x92\xff",
+            type_mime="application/json")
+        self.assertEqual(code, 400)
+        self.assertIn("erreur", donnee)
+
+    def test_un_corps_json_qui_n_est_pas_un_objet_ne_casse_rien(self):
+        self._premier_compte()
+        code, _, _ = self._appel("/concevoir", brut=b"[1, 2, 3]",
+                                 type_mime="application/json")
+        self.assertEqual(code, 400)
+
+    # ------------------------------------------------------ chacun chez soi
+
+    def test_les_projets_d_un_compte_ne_sont_pas_ceux_d_un_autre(self):
+        self._premier_compte()
+        corps, mime = self._multipart(self._archive())
+        self._appel("/televerser", brut=corps, type_mime=mime)
+        _, liste, _ = self._appel("/projets")
+        self.assertEqual(len(liste["projets"]), 1)
+
+        self._appel("/inscription", {"nom": "marie",
+                                     "motdepasse": "une-autre-phrase-secrete"})
+        self.jeton = ""
+        self._appel("/connexion", {"nom": "marie",
+                                   "motdepasse": "une-autre-phrase-secrete"})
+        _, liste, _ = self._appel("/projets")
+        self.assertEqual(liste["projets"], [])

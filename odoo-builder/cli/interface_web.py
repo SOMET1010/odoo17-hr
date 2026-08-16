@@ -123,6 +123,12 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <label for="p-mdp">Mot de passe</label>
       <input id="p-mdp" type="password" autocomplete="current-password">
     </div>
+    <div id="bloc-code" hidden>
+      <label for="p-code">Code d'installation</label>
+      <input id="p-code" autocomplete="off">
+      <p class="pied">Affiché sur la console du serveur au moment de
+        l'installation. Il n'est demandé que pour ce premier compte.</p>
+    </div>
     <div id="porte-erreur" class="erreur" hidden></div>
     <button type="submit" id="p-valider">Se connecter</button>
   </form>
@@ -463,6 +469,9 @@ async function etat() {
       : 'Identifiez-vous pour retrouver vos projets.';
     $('#p-valider').textContent = PREMIER ? 'Créer le compte' : 'Se connecter';
     $('#p-mdp').autocomplete = PREMIER ? 'new-password' : 'current-password';
+    /* En ligne, le premier compte demande le code d'installation : sinon le
+       premier visiteur venu deviendrait administrateur de l'instance. */
+    $('#bloc-code').hidden = !s.code_requis;
     return s;
   }
 
@@ -485,7 +494,8 @@ $('#guichet').addEventListener('submit', async evenement => {
   boite.hidden = true;
   const reponse = await fetch(PREMIER ? '/inscription' : '/connexion', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({nom: $('#p-nom').value, motdepasse: $('#p-mdp').value}),
+    body: JSON.stringify({nom: $('#p-nom').value, motdepasse: $('#p-mdp').value,
+                          code: $('#p-code').value}),
   });
   const donnee = await reponse.json();
   if (!reponse.ok) {

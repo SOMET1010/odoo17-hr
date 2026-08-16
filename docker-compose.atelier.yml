@@ -1,0 +1,74 @@
+# L'Atelier en ligne, et rien d'autre.
+#
+#   ATELIER_DOMAINE=atelier.exemple.fr \
+#   ATELIER_INSCRIPTION=$(openssl rand -hex 12) \
+#     docker compose -f docker-compose.atelier.yml up -d --build
+#
+# POURQUOI UN FICHIER SÉPARÉ, ET PAS UN PROFIL DE PLUS DANS L'AUTRE.
+#
+# L'Atelier n'a besoin ni d'Odoo ni de base de données : il fabrique des
+# fichiers et garde des spécifications dans un SQLite. La pile complète est
+# dimensionnée pour Odoo — PostgreSQL, filestore, un CPX32 — quand celle-ci
+# tourne sur la plus petite machine qu'on puisse louer.
+#
+# Et surtout : dans « docker-compose.yml », la passerelle donne « / » à Odoo.
+# Loger l'interface sous un sous-chemin demanderait qu'elle sache qu'elle y
+# est — chaque appel qu'elle fait est absolu. Un site à elle coûte moins cher
+# qu'une notion de préfixe promenée partout, et se déploie sur une machine
+# séparée le jour où c'est utile.
+#
+# CE QUI N'EST PAS PUBLIÉ N'EST PAS JOIGNABLE. L'interface ne publie aucun
+# port : la passerelle est le seul chemin, et il est en HTTPS.
+
+services:
+  atelier-web:
+    build: ./.docker/atelier-web
+    environment:
+      # Le code d'installation du PREMIER compte. Sans lui, l'inscription est
+      # refusée — ce qui est le bon défaut : une instance qu'on n'arrive pas à
+      # amorcer se répare, une instance prise par un inconnu, non.
+      ATELIER_INSCRIPTION: ${ATELIER_INSCRIPTION:-}
+      # La clé du modèle vit ici, dans le service. Le navigateur ne la reçoit
+      # jamais : il envoie un besoin en français et reçoit une spécification.
+      BUILDER_IA_CLE: ${BUILDER_IA_CLE:-}
+      BUILDER_IA_URL: ${BUILDER_IA_URL:-}
+      BUILDER_IA_MODELE: ${BUILDER_IA_MODELE:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      # Le Builder est monté, pas copié : le service en ligne et la ligne de
+      # commande exécutent les mêmes fichiers.
+      - ./odoo-builder:/opt/odoo-builder:ro
+      # Les projets et les comptes. C'est LA donnée à sauvegarder : un seul
+      # fichier SQLite, qu'on copie.
+      - atelier-depot:/var/lib/atelier
+    restart: unless-stopped
+
+  passerelle:
+    image: caddy:2-alpine
+    depends_on:
+      atelier-web:
+        # Attendre le contrôle de vie, pas la création du conteneur : Caddy
+        # démarré trop tôt sert des 502 le temps que Python se lève, et une
+        # page blanche au premier essai fait croire à une panne.
+        condition: service_healthy
+    environment:
+      ATELIER_DOMAINE: ${ATELIER_DOMAINE:-localhost}
+      # Directive entière, pas seulement son argument : « email » sans
+      # argument empêche Caddy de démarrer, en boucle et sans le dire.
+      ATELIER_ACME_EMAIL: ${ATELIER_ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./.docker/passerelle-atelier/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Les certificats. Sans ce volume, chaque recréation du conteneur en
+      # redemande — et Let's Encrypt limite les demandes par domaine et par
+      # semaine.
+      - passerelle-atelier-data:/data
+      - passerelle-atelier-config:/config
+    restart: unless-stopped
+
+volumes:
+  atelier-depot:
+  passerelle-atelier-data:
+  passerelle-atelier-config:

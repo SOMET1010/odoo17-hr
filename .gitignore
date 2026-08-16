@@ -2,6 +2,10 @@
 # passe administrateur d'Odoo et le secret du service d'installation.
 .env
 
+# Écrit par deployer/installer-atelier.sh : contient le code d'installation du
+# premier compte et, le cas échéant, la clé du service d'IA.
+.env.atelier
+
 # Configuration locale du routeur de fournisseurs. Elle ne contient jamais de
 # clé — seulement des noms de variables — mais elle décrit une machine donnée.
 odoo-builder/routeur.json

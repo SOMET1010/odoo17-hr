@@ -1,0 +1,40 @@
+name: Atelier en ligne
+
+# La pile telle qu'elle tournera sur le serveur : l'interface derrière une
+# passerelle HTTPS, sans Odoo ni base de données — l'Atelier n'en a besoin ni
+# de l'un ni de l'autre.
+#
+# Le certificat de « localhost » est signé par l'autorité interne de Caddy et
+# VÉRIFIÉ avec sa racine. Aucune dépendance à Let's Encrypt, ni à un nom
+# public, et rien qui soit contourné par « --insecure ».
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'docker-compose.atelier.yml'
+      - '.docker/atelier-web/**'
+      - '.docker/passerelle-atelier/**'
+      - '.docker/verifier-atelier-en-ligne.sh'
+      - 'odoo-builder/cli/**'
+      - 'odoo-builder/src/persistance/**'
+      - '.github/workflows/atelier-en-ligne.yml'
+
+jobs:
+  en-ligne:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Jouer la recette de l'Atelier en ligne
+        run: |
+          chmod +x .docker/verifier-atelier-en-ligne.sh
+          ./.docker/verifier-atelier-en-ligne.sh
+
+      - name: Journaux, en cas d'échec
+        if: failure()
+        run: |
+          echo "===== atelier-web ====="
+          docker compose -f docker-compose.atelier.yml logs --tail=120 atelier-web || true
+          echo "===== passerelle ====="
+          docker compose -f docker-compose.atelier.yml logs --tail=60 passerelle || true
