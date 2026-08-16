@@ -73,7 +73,7 @@ sleep 12
 etat=$(docker compose ps --format '{{.Service}} {{.State}}' 2>/dev/null | grep '^atelier ')
 grep -q "running" <<<"$etat"
 controle $? "L'API de l'Atelier tourne." \
-  "état : ${etat:-absente} ; $(docker compose logs --tail=5 atelier 2>&1 | tail -2)"
+  "état : ${etat:-absente} ; $(docker compose "${PROFILS[@]}" logs --tail=5 atelier 2>&1 | tail -2)"
 
 for _ in $(seq 1 30); do
   docker compose cp passerelle:/data/caddy/pki/authorities/local/root.crt \
@@ -169,9 +169,14 @@ done
 
 titre "Étape 6 — Une spécification valide devient un module installé"
 
+# Le nom du module compte : le service d'installation refuse d'écraser un
+# module livré par le dépôt, et « diligence_simple » en est un. La recette
+# butait donc sur un garde-fou correct, pas sur un défaut.
 python3 -c "
 import json
 spec = json.load(open('odoo-builder/specs/diligence_simple.json'))
+spec['technical_name'] = 'atelier_recette'
+spec['name'] = 'Recette de l\\'API Atelier'
 open('/tmp/atelier-charge.json','w').write(json.dumps({'spec': spec}))
 "
 reponse=$(appel --max-time 20 -X POST -H 'Content-Type: application/json' \
@@ -226,5 +231,5 @@ if [[ "$ECHECS" -eq 0 ]]; then
   exit 0
 fi
 printf '%b%d contrôle(s) en échec.%b\n' "$ROUGE" "$ECHECS" "$FIN"
-docker compose logs --tail=60 atelier 2>&1 | tail -60
+docker compose "${PROFILS[@]}" logs --tail=60 atelier 2>&1 | tail -60
 exit 1

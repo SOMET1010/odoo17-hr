@@ -32,8 +32,8 @@ jobs:
         if: failure()
         run: |
           echo "===== atelier ====="
-          docker compose logs --tail=100 atelier || true
+          docker compose --profile installateur --profile atelier --profile passerelle logs --tail=100 atelier || true
           echo "===== installateur ====="
-          docker compose logs --tail=60 installateur || true
+          docker compose --profile installateur --profile atelier --profile passerelle logs --tail=60 installateur || true
           echo "===== passerelle ====="
-          docker compose logs --tail=40 passerelle || true
+          docker compose --profile installateur --profile atelier --profile passerelle logs --tail=40 passerelle || true

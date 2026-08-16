@@ -124,20 +124,42 @@ class Poignee(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(corps)
 
+    def _vider_corps(self, longueur: int) -> None:
+        """Absorbe le corps d'une requête qu'on refuse.
+
+        En HTTP/1.1 la connexion est réutilisée. Refuser sans lire laisse le
+        corps dans le tuyau : la requête SUIVANTE commence à le lire comme si
+        c'était une ligne de requête, et reçoit un 501 incompréhensible. La
+        passerelle garde justement un lot de connexions vers ce service — le
+        défaut se manifestait donc à l'appel d'après, jamais sur celui qui
+        l'avait causé. Le service d'installation avait déjà ce garde-fou.
+        """
+        restant = min(longueur, CORPS_MAX)
+        if longueur > CORPS_MAX:
+            self.close_connection = True
+        while restant > 0:
+            morceau = self.rfile.read(min(64 * 1024, restant))
+            if not morceau:
+                break
+            restant -= len(morceau)
+
     def _lire_json(self) -> dict | None:
         try:
             longueur = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             self._repondre(400, {"erreur": "En-tête Content-Length invalide."})
+            self.close_connection = True
             return None
         if longueur <= 0:
             self._repondre(400, {"erreur": "Corps vide."})
             return None
         if longueur > CORPS_MAX:
+            self._vider_corps(longueur)
             self._repondre(413, {"erreur": f"Corps trop volumineux : {longueur} octets."})
             return None
+        brut = self.rfile.read(longueur)
         try:
-            return json.loads(self.rfile.read(longueur).decode("utf-8"))
+            return json.loads(brut.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as erreur:
             self._repondre(400, {"erreur": f"JSON illisible : {erreur}"})
             return None
@@ -186,21 +208,31 @@ class Poignee(BaseHTTPRequestHandler):
         self._repondre(404, {"erreur": "Route inconnue."})
 
     def do_POST(self):  # noqa: N802 - signature imposée
-        if self.path == "/specifications":
-            self._specifications()
-        elif self.path == "/modules":
-            self._modules()
-        else:
+        # Le corps est lu AVANT l'authentification, et non après : une requête
+        # refusée dont le corps reste dans le tuyau casse la requête suivante
+        # sur la même connexion. Refuser proprement suppose d'avoir tout lu.
+        if self.path not in ("/specifications", "/modules"):
+            try:
+                self._vider_corps(int(self.headers.get("Content-Length", "0")))
+            except ValueError:
+                self.close_connection = True
             self._repondre(404, {"erreur": "Route inconnue."})
-
-    # ------------------------------------------------------------- traitements
-
-    def _specifications(self) -> None:
-        if not self._autorise():
             return
+
         charge = self._lire_json()
         if charge is None:
             return
+        if not self._autorise():
+            return
+
+        if self.path == "/specifications":
+            self._specifications(charge)
+        else:
+            self._modules(charge)
+
+    # ------------------------------------------------------------- traitements
+
+    def _specifications(self, charge: dict) -> None:
         besoin = (charge.get("besoin") or "").strip()
         if not besoin:
             self._repondre(400, {"erreur": "Champ « besoin » absent ou vide."})
@@ -234,12 +266,7 @@ class Poignee(BaseHTTPRequestHandler):
             "corrections": max(0, len(getattr(redacteur, "tentatives", [])) - 1),
         })
 
-    def _modules(self) -> None:
-        if not self._autorise():
-            return
-        charge = self._lire_json()
-        if charge is None:
-            return
+    def _modules(self, charge: dict) -> None:
         spec = charge.get("spec")
         if not isinstance(spec, dict):
             self._repondre(400, {"erreur": "Champ « spec » absent ou mal formé."})
