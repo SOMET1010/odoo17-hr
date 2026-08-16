@@ -97,9 +97,16 @@ grep -q '"etat": *"ok"' <<<"$sante"
 controle $? "GET /atelier/sante répond." "reçu : ${sante:0:160}"
 
 # Le service ne publie aucun port : il ne doit exister aucun second chemin.
-docker compose ps --format '{{.Service}} {{.Ports}}' 2>/dev/null | grep '^atelier ' | grep -q '8091'
+#
+# Ce qu'on cherche est la flèche « -> », qui signale une PUBLICATION. Chercher
+# « 8091 » était faux : « docker compose ps » affiche aussi « 8091/tcp » pour
+# un port simplement déclaré par EXPOSE, qui n'ouvre rien du tout. Le contrôle
+# accusait le Dockerfile d'une faute qu'il ne commettait pas.
+ports=$(docker compose ps --format '{{.Service}} {{.Ports}}' 2>/dev/null | grep '^atelier ')
+grep -q -- '->' <<<"$ports"
 [[ $? -ne 0 ]]
-controle $? "L'API ne publie aucun port : la passerelle est le seul chemin."
+controle $? "L'API ne publie aucun port : la passerelle est le seul chemin." \
+  "ports : ${ports:-aucun}"
 
 # ------------------------------------------------------------ 3. la clé
 
