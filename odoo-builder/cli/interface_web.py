@@ -76,6 +76,11 @@ iframe{width:100%;height:78vh;border:1px solid var(--trait);border-radius:5px;
   border:1px dashed var(--trait);border-radius:5px}
 .pied{color:var(--doux);font-size:.76rem;line-height:1.5}
 details summary{cursor:pointer;font-size:.8rem;color:var(--doux)}
+.couleur{display:flex;gap:8px;align-items:center}
+.couleur input[type=color]{width:44px;height:34px;padding:2px;cursor:pointer;
+  border:1px solid var(--trait);border-radius:4px;background:var(--fond)}
+.couleur input[type=text]{font-family:var(--mono);font-size:.82rem;
+  text-transform:uppercase}
 pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   background:var(--violet-clair);padding:11px;border-radius:4px;margin:8px 0 0}
 </style>
@@ -116,6 +121,41 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <button class="second" id="convertir">Convertir et afficher</button>
       <p class="pied">Le module est lu, jamais exécuté. Ce qui n'a pas pu être
         porté est listé dans le journal.</p>
+    </div>
+
+    <div class="carte">
+      <h2>Ou fabriquez un thème</h2>
+      <p class="pied">Votre charte graphique appliquée au backend. Le contraste
+        est mesuré, pas supposé : une charte conçue pour du papier ne dit pas
+        si une couleur peut porter du texte à l'écran.</p>
+      <div>
+        <label for="t-nom">Nom du thème</label>
+        <input id="t-nom" value="Mon thème">
+      </div>
+      <div class="rangee">
+        <div>
+          <label for="t-primaire">Couleur principale</label>
+          <div class="couleur"><input type="color" id="t-primaire" value="#2256A3">
+            <input type="text" id="t-primaire-txt" value="#2256A3"></div>
+        </div>
+        <div>
+          <label for="t-accent">Couleur d'accent</label>
+          <div class="couleur"><input type="color" id="t-accent" value="#F08224">
+            <input type="text" id="t-accent-txt" value="#F08224"></div>
+        </div>
+      </div>
+      <div class="rangee">
+        <div><label for="t-police">Police</label><select id="t-police"></select></div>
+        <div><label for="t-densite">Densité</label><select id="t-densite"></select></div>
+        <div><label for="t-arrondi">Arrondi</label>
+          <select id="t-arrondi">
+            <option value="0">Angles vifs</option>
+            <option value="4px" selected>4 px</option>
+            <option value="8px">8 px</option>
+            <option value="12px">12 px</option>
+          </select></div>
+      </div>
+      <button id="theme">Prévisualiser le thème</button>
     </div>
 
     <div class="carte" id="carte-journal" hidden>
@@ -178,6 +218,25 @@ function afficherJournal(lignes) {
 function afficherResume(r) {
   $('#carte-resume').hidden = false;
   $('#titre-module').textContent = r.nom;
+  if (r.genre === 'theme') {
+    const jetons = [['jeton', r.technique], ['jeton', 'Odoo ' + r.cible],
+                    ['jeton', r.fichiers + ' fichiers']];
+    for (const m of r.mesures) {
+      jetons.push(['jeton ' + (m.ok ? 'ok' : 'non'),
+        m.role + ' ' + m.couleur + ' · texte '
+        + (m.texte === '#FFFFFF' ? 'blanc' : 'noir') + ' · ' + m.rapport + ':1']);
+    }
+    $('#resume').innerHTML = '';
+    for (const [classe, texte] of jetons) {
+      const s = document.createElement('span');
+      s.className = classe; s.textContent = texte;
+      $('#resume').appendChild(s);
+    }
+    $('#specification').textContent = JSON.stringify(r, null, 1);
+    $('#zone-apercu').innerHTML =
+      '<iframe title="Aperçu du thème" src="/apercu.html?t=' + Date.now() + '"></iframe>';
+    return;
+  }
   const jetons = [
     ['jeton', r.technique],
     ['jeton', 'Odoo ' + r.cible],
@@ -229,6 +288,33 @@ async function appeler(route, charge, bouton) {
   }
 }
 
+for (const role of ['primaire', 'accent']) {
+  const pastille = $('#t-' + role), texte = $('#t-' + role + '-txt');
+  pastille.addEventListener('input', () => { texte.value = pastille.value.toUpperCase(); });
+  texte.addEventListener('change', () => {
+    if (/^#[0-9A-Fa-f]{6}$/.test(texte.value)) pastille.value = texte.value;
+  });
+}
+
+function technique(nom) {
+  /* Un nom technique se déduit du nom lisible : « Thème ANSUT » donne
+     « theme_ansut_backend ». Le demander en plus serait une question de plus
+     à quelqu'un qui veut voir des couleurs. */
+  const nu = nom.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return ((nu || 'mon_theme') + '_backend').slice(0, 60);
+}
+
+$('#theme').addEventListener('click', e => appeler('/theme', {
+  nom: $('#t-nom').value,
+  technique: technique($('#t-nom').value),
+  primaire: $('#t-primaire-txt').value,
+  accent: $('#t-accent-txt').value,
+  police: $('#t-police').value,
+  densite: $('#t-densite').value,
+  arrondi: $('#t-arrondi').value,
+}, e.target));
+
 $('#concevoir').addEventListener('click', e =>
   appeler('/concevoir', {besoin: $('#besoin').value}, e.target));
 $('#convertir').addEventListener('click', e =>
@@ -250,6 +336,15 @@ fetch('/sante').then(r => r.json()).then(s => {
     $('#cible').appendChild(o);
   }
   $('#cible').value = s.cibles.includes('17.0') ? '17.0' : s.cibles[0];
+  for (const [champ, source] of [['#t-police', s.polices], ['#t-densite', s.densites]]) {
+    for (const [cle, description] of Object.entries(source || {})) {
+      const o = document.createElement('option');
+      o.value = cle;
+      o.textContent = cle.charAt(0).toUpperCase() + cle.slice(1) + ' — ' + description;
+      $(champ).appendChild(o);
+    }
+  }
+  if ($('#t-densite').querySelector('[value=normale]')) $('#t-densite').value = 'normale';
   $('#etat').textContent = s.fournisseur
     ? 'modèle configuré' : 'aucun modèle — conversion seule';
   if (!s.fournisseur) {

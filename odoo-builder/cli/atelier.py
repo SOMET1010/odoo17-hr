@@ -57,6 +57,11 @@ from preview.page import rendre  # noqa: E402
 from repair.repair_loop import _en_dict  # noqa: E402
 from spec.drafter import RedactionImpossible, SpecDrafter  # noqa: E402
 from spec.module_spec import ModuleSpec, SpecInvalide  # noqa: E402
+from theme.apercu import rendre as rendre_theme  # noqa: E402
+from theme.generateur import (  # noqa: E402
+    DENSITES, POLICES, Charte, ThemeInvalide, contraste, generer as generer_theme,
+    texte_lisible,
+)
 from validator.odoo_static_validator import OdooStaticValidator  # noqa: E402
 from interface_web import PAGE  # noqa: E402
 
@@ -66,6 +71,12 @@ class Atelier:
 
     def __init__(self):
         self.spec: ModuleSpec | None = None
+        # L'Atelier fabrique deux choses très différentes — un module métier
+        # et un thème — mais l'utilisateur ne fait qu'une chose à la fois.
+        # Une seule pièce « courante » évite qu'un aperçu de thème ouvre
+        # l'archive d'un module, ce qui serait la pire des confusions.
+        self.charte: Charte | None = None
+        self.courant: str = ""            # « module » ou « theme »
         self.journal: list[str] = []
 
     def noter(self, ligne: str) -> None:
@@ -102,6 +113,8 @@ class Atelier:
         donnee["cible"] = cible
         return self.retenir(ModuleSpec.depuis_dict(donnee))
 
+    cible_courante: str = "17.0"
+
     def retenir(self, spec: ModuleSpec) -> dict:
         """Valider avant de retenir : on ne montre pas ce qu'on ne livrerait pas."""
         spec.valider()
@@ -113,8 +126,10 @@ class Atelier:
         )
         if not rapport.ok:
             self.noter(rapport.texte())
-        self.spec = spec
+        self.spec, self.courant = spec, "module"
+        self.charte = None
         return {
+            "genre": "module",
             "nom": spec.name,
             "technique": spec.technical_name,
             "cible": spec.cible,
@@ -134,16 +149,73 @@ class Atelier:
 
     # -------------------------------------------------------------- livrables
 
+    def theme(self, donnee: dict, cible: str) -> dict:
+        """Une charte graphique, ses contrastes mesurés, son module.
+
+        Le contraste se contrôle plutôt qu'il ne se suppose : une charte est
+        conçue pour du papier, et c'est à l'écran que se décide si une couleur
+        peut porter du texte.
+        """
+        charte = Charte(
+            nom=donnee.get("nom") or "Thème",
+            technical_name=donnee.get("technique") or "mon_theme_backend",
+            primaire=(donnee.get("primaire") or "#714B67").upper(),
+            accent=(donnee.get("accent") or "#017E84").upper(),
+            police=donnee.get("police") or "systeme",
+            densite=donnee.get("densite") or "normale",
+            arrondi=donnee.get("arrondi") or "4px",
+            auteur=donnee.get("auteur") or "",
+        )
+        charte.valider()
+        mesures = []
+        for nom, couleur in (("primaire", charte.primaire), ("accent", charte.accent)):
+            texte = texte_lisible(couleur)
+            rapport = contraste(couleur, texte)
+            mesures.append({"role": nom, "couleur": couleur, "texte": texte,
+                            "rapport": round(rapport, 2), "ok": rapport >= 4.5})
+            self.noter(f"{nom} {couleur} : texte "
+                       f"{'blanc' if texte == '#FFFFFF' else 'noir'}, "
+                       f"{rapport:.2f}:1 {'OK' if rapport >= 4.5 else 'INSUFFISANT'}")
+        for avertissement in charte.avertissements:
+            self.noter(avertissement)
+
+        self.charte, self.courant = charte, "theme"
+        self.spec = None
+        fichiers = generer_theme(charte, cible)
+        self.noter(f"Thème généré : {len(fichiers)} fichiers pour Odoo {cible}.")
+        return {
+            "nom": charte.nom, "technique": charte.technical_name,
+            "cible": cible, "version": charte.version,
+            "genre": "theme", "fichiers": len(fichiers),
+            "mesures": mesures, "avertissements": charte.avertissements,
+            "valide": all(m["ok"] for m in mesures),
+        }
+
     def apercu(self) -> bytes:
+        if self.courant == "theme":
+            return rendre_theme(self.charte, self.cible_courante).encode("utf-8")
         return rendre(self.spec).encode("utf-8")
 
     def archive(self) -> bytes:
+        if self.courant == "theme":
+            fichiers = generer_theme(self.charte, self.cible_courante)
+            return self._zipper(fichiers)
         fichiers = OdooModuleGenerator().generate(self.spec)
+        return self._zipper(fichiers)
+
+    @staticmethod
+    def _zipper(fichiers: dict) -> bytes:
         tampon = io.BytesIO()
         with zipfile.ZipFile(tampon, "w", zipfile.ZIP_DEFLATED) as z:
             for chemin, contenu in sorted(fichiers.items()):
                 z.writestr(chemin, contenu)
         return tampon.getvalue()
+
+    @property
+    def nom_livrable(self) -> str:
+        if self.courant == "theme":
+            return self.charte.technical_name
+        return self.spec.technical_name
 
 
 class Poignee(BaseHTTPRequestHandler):
@@ -189,21 +261,23 @@ class Poignee(BaseHTTPRequestHandler):
             return self._json(200, {
                 "fournisseur": fournisseur_configure(None) is not None,
                 "cibles": list(CIBLES),
-                "specification": bool(self.atelier.spec),
+                "courant": self.atelier.courant,
+                "polices": {c: d for c, (_, d) in POLICES.items()},
+                "densites": {c: d for c, (_, d) in DENSITES.items()},
             })
         if chemin == "/apercu.html":
-            if not self.atelier.spec:
+            if not self.atelier.courant:
                 return self._repondre(404, b"Aucune specification en cours.",
                                       "text/plain; charset=utf-8")
             return self._repondre(200, self.atelier.apercu(), "text/html; charset=utf-8")
         if chemin == "/module.zip":
-            if not self.atelier.spec:
+            if not self.atelier.courant:
                 return self._json(404, {"erreur": "Aucune spécification en cours."})
             corps = self.atelier.archive()
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Disposition",
-                             f'attachment; filename="{self.atelier.spec.technical_name}.zip"')
+                             f'attachment; filename="{self.atelier.nom_livrable}.zip"')
             self.send_header("Content-Length", str(len(corps)))
             self.end_headers()
             return self.wfile.write(corps)
@@ -219,6 +293,7 @@ class Poignee(BaseHTTPRequestHandler):
             return self._json(400, {"erreur": f"cible inconnue « {cible} »"})
 
         self.atelier.journal = []
+        self.atelier.cible_courante = cible
         try:
             if chemin == "/concevoir":
                 besoin = (donnee.get("besoin") or "").strip()
@@ -230,12 +305,14 @@ class Poignee(BaseHTTPRequestHandler):
                 resultat = self.atelier.concevoir(besoin, cible)
             elif chemin == "/convertir":
                 resultat = self.atelier.convertir(donnee.get("chemin") or "", cible)
+            elif chemin == "/theme":
+                resultat = self.atelier.theme(donnee, cible)
             elif chemin == "/charger":
                 resultat = self.atelier.charger(donnee.get("specification") or {}, cible)
             else:
                 return self._json(404, {"erreur": "route inconnue"})
         except (RedactionImpossible, ConversionImpossible, SpecInvalide,
-                RuntimeError, FileNotFoundError) as erreur:
+                ThemeInvalide, RuntimeError, FileNotFoundError) as erreur:
             return self._json(400, {"erreur": str(erreur),
                                     "journal": self.atelier.journal})
         resultat["journal"] = self.atelier.journal
