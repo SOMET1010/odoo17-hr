@@ -1,0 +1,39 @@
+name: API de l'Atelier
+
+# La surface que l'interface appellera. Éprouvée par le seul chemin qui existe
+# — la passerelle, en HTTPS — puisque le service ne publie aucun port.
+#
+# Aucune clé de fournisseur n'est nécessaire : tout ce qui est vérifié ici est
+# déterministe. Le chemin qui appelle le modèle l'est par l'acceptation.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.docker/service-atelier/**'
+      - '.docker/passerelle/**'
+      - '.docker/verifier-atelier.sh'
+      - 'docker-compose.yml'
+      - 'odoo-builder/src/**'
+      - '.github/workflows/atelier-api.yml'
+
+jobs:
+  atelier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Jouer la recette de l'API
+        run: |
+          chmod +x .docker/verifier-atelier.sh
+          ./.docker/verifier-atelier.sh
+
+      - name: Journaux, en cas d'échec
+        if: failure()
+        run: |
+          echo "===== atelier ====="
+          docker compose logs --tail=100 atelier || true
+          echo "===== installateur ====="
+          docker compose logs --tail=60 installateur || true
+          echo "===== passerelle ====="
+          docker compose logs --tail=40 passerelle || true

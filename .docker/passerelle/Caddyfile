@@ -36,6 +36,13 @@
 		reverse_proxy odoo:8072
 	}
 
+	# L'API de l'Atelier. Seule route ajoutée, et elle mène au service qui
+	# fabrique — jamais à celui qui installe : ce dernier reçoit des archives
+	# et n'a aucune route ici, ni maintenant ni plus tard.
+	handle_path /atelier/* {
+		reverse_proxy atelier:8091
+	}
+
 	handle {
 		reverse_proxy odoo:8069
 	}

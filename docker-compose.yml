@@ -86,6 +86,34 @@ services:
       - ./:/mnt/extra-addons:ro
     restart: unless-stopped
 
+  # API de l'Atelier : la surface que l'interface appelle.
+  #
+  # Elle ne publie AUCUN port. On ne l'atteint que par la passerelle, en HTTPS
+  # et derrière sa clé — publier 8091 offrirait un second chemin, en clair,
+  # que rien ne surveillerait.
+  atelier:
+    build: ./.docker/service-atelier
+    profiles: ["atelier"]
+    depends_on:
+      - installateur
+    environment:
+      ATELIER_CLE_API: ${ATELIER_CLE_API:-}
+      INSTALLATEUR_URL: http://installateur:8090
+      INSTALLATEUR_CLE_API: ${INSTALLATEUR_CLE_API:-cle-de-developpement}
+      # Le service parle au modèle : la clé vit ici, jamais dans l'interface.
+      BUILDER_IA_CLE: ${BUILDER_IA_CLE:-}
+      BUILDER_IA_URL: ${BUILDER_IA_URL:-}
+      BUILDER_IA_MODELE: ${BUILDER_IA_MODELE:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      KIMI_API_KEY: ${KIMI_API_KEY:-}
+      # Liste blanche d'origines. Jamais « * » avec une clé d'API.
+      ORIGINES_AUTORISEES: ${ORIGINES_AUTORISEES:-}
+    volumes:
+      # Le Builder est monté, pas copié : le service et la ligne de commande
+      # exécutent les mêmes fichiers.
+      - ./odoo-builder:/opt/odoo-builder:ro
+    restart: unless-stopped
+
   # Passerelle HTTPS. Sous profil : « docker compose up » ne la démarre pas.
   #
   #   ATELIER_DOMAINE=atelier.exemple.fr \
