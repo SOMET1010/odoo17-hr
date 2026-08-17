@@ -92,11 +92,18 @@ class OpenAIProvider(AIProvider):
         modele: str = "gpt-4o",
         url: str = "https://api.openai.com/v1/chat/completions",
         delai: int = 120,
+        jetons_max: int = 8000,
     ):
         self.cle_api = cle_api or os.environ.get("OPENAI_API_KEY", "")
         self.modele = modele
         self.url = url
         self.delai = delai
+        # SANS CETTE BORNE, certains services réservent le contexte ENTIER du
+        # modèle — 65 536 jetons — et refusent la requête faute de crédits
+        # pour couvrir ce maximum théorique. Le message parle alors d'argent,
+        # jamais du fait qu'on n'a rien demandé de tel. Une spécification de
+        # module tient très largement dans 8 000 jetons.
+        self.jetons_max = jetons_max
 
     def completer_json(self, consigne: str, contexte: str) -> dict:
         if not self.cle_api:
@@ -147,6 +154,7 @@ class OpenAIProvider(AIProvider):
         """Un aller-retour HTTP. Séparé pour pouvoir le rejouer sans le JSON strict."""
         corps_requete = {
             "model": self.modele,
+            "max_tokens": self.jetons_max,
             "messages": [
                 {"role": "system", "content": consigne},
                 {"role": "user", "content": contexte},

@@ -4096,3 +4096,93 @@ class TestCatalogueDesModeles(unittest.TestCase):
         }
         for donnee, attendu in cas.items():
             self.assertEqual(adresse_du_catalogue(donnee), attendu)
+
+
+class TestSuggestionDeModele(unittest.TestCase):
+    """Suggérer, à partir de ce que le fournisseur déclare — jamais de mémoire.
+
+    On s'est brûlé deux fois avec des noms de modèles figés dans le code : ils
+    vieillissent en quelques mois. Une recommandation périmée est pire
+    qu'aucune, parce qu'elle a l'air sûre. Le fournisseur décrit ses modèles à
+    chaque appel : c'est cette description qu'on classe.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        import atelier
+        self.classer = atelier.Poignee._classer
+
+    @staticmethod
+    def _catalogue():
+        return {"data": [
+            {"id": "payant/costaud", "context_length": 200000,
+             "supported_parameters": ["response_format"],
+             "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
+            {"id": "gratuit/bavard:free", "context_length": 64000,
+             "supported_parameters": ["temperature"],
+             "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "gratuit/serieux:free", "context_length": 128000,
+             "supported_parameters": ["response_format", "temperature"],
+             "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "gratuit/etroit:free", "context_length": 8000,
+             "supported_parameters": ["structured_outputs"],
+             "pricing": {"prompt": "0", "completion": "0"}},
+        ]}
+
+    def test_le_suggere_est_gratuit_et_sait_rendre_du_json(self):
+        """Le couple qui permet de travailler sans y penser : rien à payer,
+        et une réponse analysable — toute la chaîne en dépend."""
+        resultat = self.classer(self._catalogue())
+        self.assertEqual(resultat["recommande"], "gratuit/serieux:free")
+        self.assertIn("JSON", resultat["pourquoi"].upper())
+
+    def test_les_gratuits_capables_arrivent_en_tete(self):
+        resultat = self.classer(self._catalogue())
+        self.assertEqual(resultat["modeles"][0], "gratuit/serieux:free")
+        # Un gratuit qui ne sait pas rendre du JSON passe APRÈS un payant qui
+        # sait : le prix ne rachète pas une réponse inexploitable.
+        rang = resultat["modeles"].index
+        self.assertLess(rang("payant/costaud"), rang("gratuit/bavard:free"))
+
+    def test_un_contexte_trop_etroit_n_est_pas_suggere(self):
+        """Une spécification et son motif de refus ne tiennent pas dans
+        8 000 jetons."""
+        self.assertNotEqual(self.classer(self._catalogue())["recommande"],
+                            "gratuit/etroit:free")
+
+    def test_le_gratuit_se_deduit_aussi_du_tarif_a_zero(self):
+        """Tous les services ne suffixent pas « :free »."""
+        resultat = self.classer({"data": [
+            {"id": "maison/modele", "context_length": 64000,
+             "supported_parameters": ["response_format"],
+             "pricing": {"prompt": "0", "completion": "0"}}]})
+        self.assertTrue(resultat["details"]["maison/modele"]["gratuit"])
+        self.assertEqual(resultat["gratuits"], 1)
+
+    def test_un_catalogue_sans_metadonnees_ne_casse_pas(self):
+        """Un service local rend souvent une liste d'identifiants nus."""
+        resultat = self.classer({"data": ["qwen2.5-coder", "llama3"]})
+        self.assertEqual(sorted(resultat["modeles"]), ["llama3", "qwen2.5-coder"])
+        self.assertEqual(resultat["recommande"], "")
+
+    def test_la_borne_de_jetons_est_posee_dans_la_requete(self):
+        """Sans elle, certains services réservent le contexte ENTIER du modèle
+        et refusent faute de crédits pour couvrir ce maximum théorique — le
+        message parle alors d'argent, jamais de ce qu'on a demandé."""
+        from ai.provider import OpenAIProvider
+        fournisseur = OpenAIProvider(cle_api="x")
+        vu = {}
+
+        def espion(url, data=None, method=None):
+            vu.update(json.loads(data.decode("utf-8")))
+            raise RuntimeError("arrêt volontaire")
+
+        import urllib.request
+        ancien = urllib.request.Request
+        urllib.request.Request = espion
+        try:
+            with contextlib.suppress(Exception):
+                fournisseur.completer_json("consigne", "contexte")
+        finally:
+            urllib.request.Request = ancien
+        self.assertEqual(vu.get("max_tokens"), 8000)

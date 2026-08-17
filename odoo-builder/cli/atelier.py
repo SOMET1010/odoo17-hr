@@ -1081,17 +1081,81 @@ class Poignee(BaseHTTPRequestHandler):
         except Exception as erreur:                           # noqa: BLE001
             return self._json(502, {"erreur": self._lisible(erreur)})
 
+        return self._json(200, self._classer(brut))
+
+    @staticmethod
+    def _classer(brut: dict) -> dict:
+        """Trier les modèles selon ce que le FOURNISSEUR déclare d'eux.
+
+        POURQUOI PAS UNE LISTE DE « meilleurs modèles » ÉCRITE ICI. On vient
+        de se brûler deux fois avec des noms figés dans le code : ils
+        vieillissent en quelques mois, et une recommandation périmée est pire
+        qu'aucune — elle a l'air sûre. Le fournisseur, lui, décrit chaque
+        modèle à chaque appel. On lit ce qu'il dit.
+
+        CE QUI COMPTE POUR CET OUTIL, ET RIEN D'AUTRE :
+
+          rendre du JSON STRICT. Toute la chaîne en dépend : le modèle
+          n'écrit qu'une spécification, et elle doit être analysable. Un
+          service qui déclare « response_format » ou « structured_outputs »
+          annonce qu'il sait le faire ;
+
+          être GRATUIT, ou pas. Un modèle payant sur un compte sans crédit
+          rend un 402 qui parle d'argent et qu'on met dix minutes à
+          comprendre ;
+
+          avoir de la place. Une spécification de module et son motif de
+          refus tiennent large, mais pas dans 4 000 jetons.
+        """
         modeles = []
         for entree in (brut.get("data") or brut.get("models") or []):
-            nom = entree.get("id") if isinstance(entree, dict) else str(entree)
-            if nom:
-                modeles.append(nom)
-        # Les gratuits d'abord : c'est ce qu'on cherche quand on vient ici.
-        gratuits = sorted(n for n in modeles if n.endswith(":free"))
-        autres = sorted(n for n in modeles if not n.endswith(":free"))
-        return self._json(200, {"modeles": gratuits + autres,
-                                "gratuits": len(gratuits),
-                                "total": len(modeles)})
+            if not isinstance(entree, dict):
+                modeles.append({"id": str(entree), "gratuit": False,
+                                "json": False, "contexte": 0})
+                continue
+            nom = entree.get("id") or ""
+            if not nom:
+                continue
+            parametres = entree.get("supported_parameters") or []
+            tarif = entree.get("pricing") or {}
+            def zero(valeur):
+                try:
+                    return float(valeur) == 0
+                except (TypeError, ValueError):
+                    return False
+            modeles.append({
+                "id": nom,
+                "gratuit": nom.endswith(":free") or (
+                    zero(tarif.get("prompt")) and zero(tarif.get("completion"))),
+                "json": any(p in parametres for p in
+                            ("response_format", "structured_outputs")),
+                "contexte": int(entree.get("context_length") or 0),
+            })
+
+        def rang(modele):
+            # Gratuit ET capable de JSON d'abord : c'est le couple qui fait
+            # qu'on peut travailler sans y penser.
+            return (0 if (modele["gratuit"] and modele["json"]) else
+                    1 if modele["json"] else
+                    2 if modele["gratuit"] else 3,
+                    -modele["contexte"], modele["id"])
+
+        modeles.sort(key=rang)
+        recommande = next((m for m in modeles
+                           if m["gratuit"] and m["json"] and m["contexte"] >= 30000),
+                          None) or next((m for m in modeles if m["json"]), None)
+        return {
+            "modeles": [m["id"] for m in modeles],
+            "details": {m["id"]: m for m in modeles},
+            "gratuits": sum(1 for m in modeles if m["gratuit"]),
+            "total": len(modeles),
+            "recommande": recommande["id"] if recommande else "",
+            "pourquoi": (
+                f"gratuit, sait rendre du JSON strict, "
+                f"{recommande['contexte'] // 1000} k de contexte"
+                if recommande and recommande["gratuit"] and recommande["json"]
+                else ("sait rendre du JSON strict" if recommande else "")),
+        }
 
     def _essayer_modele(self):
         """Appeler VRAIMENT le fournisseur, et rapporter ce qu'il répond.
@@ -1157,6 +1221,11 @@ class Poignee(BaseHTTPRequestHandler):
         if "429" in texte:
             return ("Le fournisseur limite les appels (429). C'est le quota "
                     "d'une offre gratuite : réessayez dans un moment.")
+        if "402" in texte or "credits" in texte.lower():
+            return ("Le fournisseur demande des crédits pour ce modèle (402). "
+                    "Choisissez un modèle GRATUIT dans la liste — ils sont "
+                    "marqués et placés en tête — ou créditez le compte chez "
+                    "ce fournisseur." + ou)
         if "Name or service not known" in texte or "getaddrinfo" in texte:
             return ("L'adresse du fournisseur est introuvable : vérifiez-la "
                     "dans « Modèle », ou la sortie réseau du serveur." + ou)

@@ -1181,25 +1181,32 @@ $('#m-catalogue').addEventListener('click', async evenement => {
     const liste = $('#m-choix');
     liste.textContent = '';
     for (const nom of donnee.modeles) {
+      const detail = (donnee.details || {})[nom] || {};
       const option = document.createElement('option');
-      option.value = nom; option.textContent = nom;
+      option.value = nom;
+      /* Ce qui décide, affiché à côté du nom : gratuit ou non, et sait-il
+         rendre du JSON strict — toute la chaîne en dépend. */
+      const marques = [];
+      if (nom === donnee.recommande) marques.push('recommandé');
+      if (detail.gratuit) marques.push('gratuit');
+      if (detail.json) marques.push('JSON strict');
+      if (detail.contexte) marques.push(Math.round(detail.contexte / 1000) + ' k');
+      option.textContent = nom + (marques.length ? '  —  ' + marques.join(' · ') : '');
       liste.appendChild(option);
     }
     $('#bloc-choix').hidden = !donnee.modeles.length;
-    if (donnee.modeles.length) {
-      liste.value = donnee.modeles[0];
-      $('#m-modele').value = donnee.modeles[0];
-    }
+    const retenu = donnee.recommande || donnee.modeles[0];
+    if (retenu) { liste.value = retenu; $('#m-modele').value = retenu; }
     /* NE PAS DIRE « la clé est acceptée ». Chez OpenRouter, cette liste est
        PUBLIQUE : elle répond sans clé. L'annoncer validée ici serait un
        mensonge, et le pire : celui qui rassure juste avant l'échec. Seul
        l'appel réel tranche — il part tout de suite après l'enregistrement. */
-    $('#mot-catalogue').textContent = donnee.gratuits
-      ? `${donnee.total} modèles proposés par ce service, dont ${donnee.gratuits} `
-        + `gratuits — ceux-ci sont en tête. Choisissez, puis Enregistrer : la `
-        + `clé sera éprouvée à ce moment-là, pour de bon.`
-      : `${donnee.total} modèles proposés par ce service. Choisissez, puis `
-        + `Enregistrer : la clé sera éprouvée à ce moment-là, pour de bon.`;
+    $('#mot-catalogue').textContent = donnee.recommande
+      ? `${donnee.total} modèles, dont ${donnee.gratuits} gratuits. `
+        + `Suggéré : ${donnee.recommande} — ${donnee.pourquoi}. Il est `
+        + `pré-sélectionné ; Enregistrer l'éprouvera pour de bon.`
+      : `${donnee.total} modèles, dont ${donnee.gratuits} gratuits. `
+        + `Choisissez, puis Enregistrer : la clé sera éprouvée à ce moment-là.`;
     direModele('', true);
   } finally { bouton.disabled = false; bouton.textContent = libelle; }
 });
