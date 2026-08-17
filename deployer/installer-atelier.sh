@@ -16,6 +16,10 @@
 # machine qu'on puisse louer (2 vCPU, 4 Go). Pour la pile complète, avec Odoo
 # et le service d'installation, c'est deployer/installer.sh.
 #
+# UNE CLÉ DE MODÈLE, ET CHEZ QUI. « --cle-ia » suffit pour OpenAI. Pour tout
+# autre fournisseur parlant le même protocole — Moonshot/Kimi, un service
+# local — ajoutez « --url » et « --modele ».
+#
 # LE CODE D'INSTALLATION. Le premier compte créé sera administrateur. Sur une
 # adresse publique, le premier arrivé n'est pas forcément vous : le script
 # tire un code au sort, l'affiche à la fin, et l'Atelier le réclame pour ce
@@ -29,12 +33,20 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 DOMAINE=""
 COURRIEL=""
 CLE_IA=""
+URL_IA=""
+MODELE_IA=""
 SANS_QUESTION=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domaine)  DOMAINE="${2:-}"; shift 2 ;;
     --courriel) COURRIEL="${2:-}"; shift 2 ;;
     --cle-ia)   CLE_IA="${2:-}"; shift 2 ;;
+    # Tout fournisseur parlant le protocole OpenAI convient — Moonshot/Kimi,
+    # un service local, un proxy d'entreprise. Sans ces deux options, c'est
+    # OpenAI et « gpt-4o ». Les poser ici évite d'aller éditer un fichier sur
+    # le serveur, ce qui est exactement ce qu'un installeur doit éviter.
+    --url)      URL_IA="${2:-}"; shift 2 ;;
+    --modele)   MODELE_IA="${2:-}"; shift 2 ;;
     --sans-question) SANS_QUESTION=1; shift ;;
     *) printf 'Option inconnue : %s\n' "$1" >&2; exit 1 ;;
   esac
@@ -125,6 +137,8 @@ if [[ -f .env.atelier ]]; then
   # relance pour changer de domaine effacerait la clé d'IA et le code
   # d'installation — et le code, lui, ne se retrouve nulle part.
   CLE_IA="${CLE_IA:-${BUILDER_IA_CLE:-}}"
+  URL_IA="${URL_IA:-${BUILDER_IA_URL:-}}"
+  MODELE_IA="${MODELE_IA:-${BUILDER_IA_MODELE:-}}"
   COURRIEL="${COURRIEL:-${ATELIER_ACME_EMAIL#email }}"
 else
   ATELIER_INSCRIPTION=$(hasard 24)
@@ -141,6 +155,8 @@ umask 077
   echo "ATELIER_DOMAINE=$DOMAINE"
   echo "ATELIER_INSCRIPTION=$ATELIER_INSCRIPTION"
   [[ -n "$CLE_IA" ]] && echo "BUILDER_IA_CLE=$CLE_IA"
+  [[ -n "$URL_IA" ]] && echo "BUILDER_IA_URL=$URL_IA"
+  [[ -n "$MODELE_IA" ]] && echo "BUILDER_IA_MODELE=$MODELE_IA"
   # Directive complète, ou rien : « email » sans argument empêche Caddy de
   # démarrer, en boucle, et une variable définie mais vide ne prend pas son
   # défaut.
@@ -153,7 +169,7 @@ ok "secrets écrits dans .env.atelier (600)"
 # écraser une pile complète éventuellement installée sur la même machine.
 if [[ -f .env ]] && grep -q 'INSTALLATEUR_CLE_API' .env 2>/dev/null; then
   avert "un .env de la pile complète existe : les réglages y sont ajoutés."
-  grep -v '^ATELIER_DOMAINE=\|^ATELIER_INSCRIPTION=\|^ATELIER_ACME_EMAIL=\|^BUILDER_IA_CLE=' \
+  grep -v '^ATELIER_DOMAINE=\|^ATELIER_INSCRIPTION=\|^ATELIER_ACME_EMAIL=\|^BUILDER_IA_CLE=\|^BUILDER_IA_URL=\|^BUILDER_IA_MODELE=' \
     .env > /tmp/env-fusion 2>/dev/null
   cat /tmp/env-fusion .env.atelier > .env && rm -f /tmp/env-fusion
 else
