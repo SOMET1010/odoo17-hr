@@ -192,13 +192,32 @@ class Atelier:
     def retenir_projet(self, nom, genre, cible, technique, contenu,
                        origine="", motif="") -> None:
         """Tout passe par ici. Un seul point d'enregistrement, donc rien
-        qui puisse être oublié sur l'un des trois chemins."""
-        self.projet = self.depot.enregistrer(
-            nom=nom, genre=genre, cible=cible, technique=technique,
-            contenu=contenu, horodatage=self.maintenant(), origine=origine,
-            identifiant=self.projet, motif=motif,
-            proprietaire=self.compte,
-        )
+        qui puisse être oublié sur l'un des trois chemins.
+
+        UN IDENTIFIANT PÉRIMÉ NE DOIT JAMAIS FAIRE ÉCHOUER UN TRAVAIL. Le
+        « projet courant » n'est qu'une commodité d'affichage : il dit où
+        ranger la prochaine révision. S'il désigne le projet de quelqu'un
+        d'autre — état partagé d'une version antérieure, session rouverte
+        après un changement de compte — le dépôt refuse, et il a raison : cette
+        frontière-là ne se négocie pas. Mais refuser l'enregistrement TOUT
+        ENTIER pour cette raison revenait à jeter une conception de quarante
+        secondes. On oublie l'identifiant, et on range dans un projet neuf.
+        """
+        try:
+            self.projet = self.depot.enregistrer(
+                nom=nom, genre=genre, cible=cible, technique=technique,
+                contenu=contenu, horodatage=self.maintenant(), origine=origine,
+                identifiant=self.projet, motif=motif,
+                proprietaire=self.compte,
+            )
+        except ProjetInaccessible:
+            self.noter("Le projet en cours appartenait à un autre compte : "
+                       "un nouveau projet est créé.")
+            self.projet = self.depot.enregistrer(
+                nom=nom, genre=genre, cible=cible, technique=technique,
+                contenu=contenu, horodatage=self.maintenant(), origine=origine,
+                identifiant=None, motif=motif, proprietaire=self.compte,
+            )
         self.noter(f"Projet enregistré ({self.projet}).")
 
     def signaler(self, genre: str, sujet: str, detail: str = "",

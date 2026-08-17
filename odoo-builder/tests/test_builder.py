@@ -4436,3 +4436,66 @@ class TestJauge(unittest.TestCase):
         _, avance, _ = self._appel("/progres")
         self.assertFalse(avance["actif"])
         self.assertTrue(avance.get("motif"))
+
+
+class TestUnProjetPerimeNeCasseRien(unittest.TestCase):
+    """Un identifiant périmé ne doit jamais faire échouer un travail.
+
+    C'est l'erreur qui a coûté un cahier des charges : quarante secondes de
+    conception jetées parce que le « projet courant » désignait celui d'un
+    autre compte. La frontière du dépôt est juste — elle ne se négocie pas —
+    mais l'appelant n'avait aucune raison de présenter cet identifiant.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    SPEC = TestChacunSaPiece.SPEC
+
+    def test_un_projet_d_autrui_en_cours_ne_fait_pas_perdre_le_travail(self):
+        import atelier as module
+        self._premier_compte()
+        atelier = module.Poignee.atelier
+        _, sante, _ = self._appel("/sante")
+        moi = sante["compte"]["id"]
+
+        # Un projet qui appartient à quelqu'un d'autre.
+        etranger = atelier.depot.enregistrer(
+            nom="Le sien", genre="module", cible="17.0", technique="sien",
+            contenu={"v": 1}, horodatage="2026-08-17T10:00:00",
+            proprietaire="un-autre-compte")
+
+        # On le pose comme « courant » pour NOTRE compte — exactement l'état
+        # qu'un état partagé produisait.
+        atelier.compte = moi
+        atelier.projet = etranger
+
+        code, donnee, _ = self._appel("/charger", {"specification": self.SPEC})
+        self.assertEqual(code, 200, donnee)
+        self.assertNotEqual(donnee["projet"], etranger)
+        self.assertIn("appartenait à un autre compte",
+                      " ".join(donnee["journal"]))
+
+        # Et le projet d'autrui n'a pas été touché.
+        _, liste, _ = self._appel("/projets")
+        self.assertEqual([p["nom"] for p in liste["projets"]], ["À moi"])
+
+    def test_la_frontiere_du_depot_reste_intacte(self):
+        """On assouplit l'APPELANT, jamais la règle : présenter l'identifiant
+        d'un autre au dépôt doit toujours être refusé."""
+        import atelier as module
+        from persistance.depot import ProjetInaccessible
+        self._premier_compte()
+        depot = module.Poignee.atelier.depot
+        etranger = depot.enregistrer(
+            nom="Le sien", genre="module", cible="17.0", technique="sien",
+            contenu={"v": 1}, horodatage="2026-08-17T10:00:00",
+            proprietaire="un-autre-compte")
+        with self.assertRaises(ProjetInaccessible):
+            depot.enregistrer(nom="Vol", genre="module", cible="17.0",
+                              technique="vol", contenu={"v": 2},
+                              horodatage="2026-08-17T11:00:00",
+                              identifiant=etranger, proprietaire="moi")
