@@ -69,7 +69,14 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   ok "déjà installé — $(docker --version | cut -d, -f1)"
 else
   info "installation via le dépôt officiel Docker…"
-  command -v curl >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq curl
+  # « A || B && C » se lit « (A || B) && C » : écrite en une ligne, cette
+  # condition installait curl même quand il était là, et l'installait quand
+  # même si la mise à jour du dépôt avait échoué. Un « if » dit ce qu'on veut.
+  if ! command -v curl >/dev/null 2>&1; then
+    sudo apt-get update -qq \
+      && sudo apt-get install -y -qq curl \
+      || fatal "curl est introuvable et n'a pas pu être installé."
+  fi
   curl -fsSL https://get.docker.com | sudo sh >/dev/null 2>&1 \
     || fatal "l'installation de Docker a échoué. Voir https://docs.docker.com/engine/install/"
   ok "Docker installé"
