@@ -4499,3 +4499,47 @@ class TestUnProjetPerimeNeCasseRien(unittest.TestCase):
                               technique="vol", contenu={"v": 2},
                               horodatage="2026-08-17T11:00:00",
                               identifiant=etranger, proprietaire="moi")
+
+
+class TestAvertissementApparence(unittest.TestCase):
+    """Un besoin d'apparence n'a rien à faire dans la voie des modules métier.
+
+    C'est arrivé, avec un cahier des charges complet : sept modèles, treize
+    vues, validation statique passée — et pas un pixel d'Odoo modifié. Le
+    module créait des écrans pour SAISIR des couleurs, sans une ligne de style.
+    C'est le pire genre de livrable : celui qui a l'air de marcher.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        os.environ["ATELIER_DEPOT"] = os.path.join(self._dossier.name, "a.sqlite")
+        from atelier import Atelier
+        self.atelier = Atelier()
+
+    def _avertir(self, besoin):
+        self.atelier.commencer("essai")
+        self.atelier.prevenir_si_apparence(besoin)
+        return " ".join(self.atelier.journal)
+
+    def test_un_besoin_de_theme_est_signale(self):
+        journal = self._avertir(
+            "Je veux un thème backend avec une barre latérale verticale, un "
+            "mode sombre et notre charte graphique.")
+        self.assertIn("ATTENTION", journal)
+        self.assertIn("fabriquez un thème", journal)
+
+    def test_un_besoin_metier_ordinaire_n_est_pas_signale(self):
+        """« couleur » apparaît dans mille besoins légitimes : un seul mot ne
+        doit pas déclencher l'avertissement."""
+        journal = self._avertir(
+            "Je veux suivre les demandes de congé. Chaque demande porte un "
+            "agent, des dates, un motif, et une couleur d'étiquette.")
+        self.assertNotIn("ATTENTION", journal)
+
+    def test_l_avertissement_ne_bloque_pas(self):
+        """Quelqu'un peut vouloir un module qui STOCKE une configuration de
+        thème. On prévient, on n'interdit pas."""
+        self.assertIsNone(self.atelier.prevenir_si_apparence(
+            "thème, couleurs, mode sombre, logo"))

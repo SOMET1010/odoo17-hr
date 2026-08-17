@@ -297,8 +297,37 @@ class Atelier:
                                   modele=etat.modele, url=etat.url)
         return fournisseur_configure(journal)
 
+    # Des mots qui, ensemble, désignent une demande d'APPARENCE. Un seul ne
+    # suffit pas : « couleur » apparaît dans mille besoins métier légitimes.
+    APPARENCE = ("thème", "theme", "charte graphique", "couleurs", "sidebar",
+                 "mode sombre", "dark mode", "apparence", "logo", "police",
+                 "barre latérale", "écran de connexion")
+
+    def prevenir_si_apparence(self, besoin: str) -> None:
+        """Dire tout de suite qu'on n'est pas à la bonne porte.
+
+        POURQUOI CET AVERTISSEMENT EXISTE. Un besoin d'apparence décrit par
+        cette voie produit un module qui INSTALLE et qui ne CHANGE RIEN : des
+        écrans pour saisir des couleurs, et pas une ligne de style. C'est
+        arrivé, avec un cahier des charges complet — sept modèles, treize
+        vues, validation passée, et pas un pixel modifié. Le pire genre de
+        livrable : celui qui a l'air de marcher.
+        """
+        minuscule = besoin.lower()
+        trouves = [mot for mot in self.APPARENCE if mot in minuscule]
+        if len(trouves) < 2:
+            return
+        self.noter(
+            "ATTENTION — ce besoin parle d'apparence (" + ", ".join(trouves[:4])
+            + "). Cette voie fabrique un module MÉTIER : il créera des écrans "
+            "pour SAISIR des couleurs, il n'en appliquera aucune. Pour changer "
+            "l'aspect d'Odoo, utilisez « Ou fabriquez un thème » plus bas dans "
+            "la page — c'est elle qui produit les variables SCSS et le bundle "
+            "d'assets.")
+
     def concevoir(self, besoin: str, cible: str) -> dict:
         self.commencer("Conception de la spécification")
+        self.prevenir_si_apparence(besoin)
         fournisseur = self.fournisseur(self.noter)
         if fournisseur is None:
             raise RuntimeError(
