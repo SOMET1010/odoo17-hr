@@ -3025,6 +3025,34 @@ class TestAtelierEnLigne(unittest.TestCase):
 
     # ------------------------------------------------------------ la porte
 
+    def test_la_page_de_connexion_dit_ce_qu_est_le_site(self):
+        """Une page qui n'offre qu'un champ « mot de passe », sur un domaine
+        récent, a le profil exact d'une page d'hameçonnage — et les filtres
+        d'entreprise la classent comme telle, sans lire le certificat ni le
+        contenu. C'est le seul de ces signaux qui dépende de nous."""
+        from interface_web import PAGE
+        for temoin in ("Outil interne", "Accès sur invitation",
+                       "github.com/SOMET1010/odoo17-hr"):
+            self.assertIn(temoin, PAGE)
+
+    def test_l_outil_n_est_pas_indexable(self):
+        code, corps, _ = self._appel("/robots.txt")
+        self.assertEqual(code, 200)
+        self.assertIn(b"Disallow: /", corps)
+
+    def test_security_txt_n_invente_pas_d_adresse(self):
+        """Publier une adresse au hasard ne vaudrait rien — et en publier une
+        vraie sans le vouloir la livre aux moissonneurs."""
+        garde = os.environ.pop("ATELIER_CONTACT", None)
+        self.addCleanup(lambda: os.environ.__setitem__("ATELIER_CONTACT", garde)
+                        if garde else None)
+        code, _, _ = self._appel("/.well-known/security.txt")
+        self.assertEqual(code, 404)
+        os.environ["ATELIER_CONTACT"] = "contact@exemple.fr"
+        code, corps, _ = self._appel("/.well-known/security.txt")
+        self.assertEqual(code, 200)
+        self.assertIn(b"mailto:contact@exemple.fr", corps)
+
     def test_un_anonyme_n_atteint_aucune_route_de_travail(self):
         self._premier_compte()
         self.jeton = ""

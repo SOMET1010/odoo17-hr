@@ -181,6 +181,9 @@ umask 077
   # relirait ce fichier avec un shell.
   echo "ATELIER_DOMAINE=\"$DOMAINE\""
   echo "ATELIER_INSCRIPTION=\"$ATELIER_INSCRIPTION\""
+  # Servie dans /.well-known/security.txt : « à qui écrire » est un signal que
+  # les sites d'hameçonnage n'ont jamais, et que les filtres regardent.
+  [[ -n "$COURRIEL" ]] && echo "ATELIER_CONTACT=\"$COURRIEL\""
   [[ -n "$CLE_IA" ]] && echo "BUILDER_IA_CLE=\"$CLE_IA\""
   [[ -n "$URL_IA" ]] && echo "BUILDER_IA_URL=\"$URL_IA\""
   [[ -n "$MODELE_IA" ]] && echo "BUILDER_IA_MODELE=\"$MODELE_IA\""

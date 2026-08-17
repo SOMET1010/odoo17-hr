@@ -28,6 +28,18 @@ services:
       # refusée — ce qui est le bon défaut : une instance qu'on n'arrive pas à
       # amorcer se répare, une instance prise par un inconnu, non.
       ATELIER_INSCRIPTION: ${ATELIER_INSCRIPTION:-}
+      # Publiée dans /.well-known/security.txt, et nulle part ailleurs.
+      ATELIER_CONTACT: ${ATELIER_CONTACT:-}
+      # Notifications : le journal est toujours tenu ; ces voies-ci sont
+      # optionnelles. Voir src/persistance/notifications.py pour le contrat.
+      NOTIF_WEBHOOK_URL: ${NOTIF_WEBHOOK_URL:-}
+      NOTIF_WEBHOOK_JETON: ${NOTIF_WEBHOOK_JETON:-}
+      NOTIF_SMTP_HOTE: ${NOTIF_SMTP_HOTE:-}
+      NOTIF_SMTP_PORT: ${NOTIF_SMTP_PORT:-587}
+      NOTIF_SMTP_UTILISATEUR: ${NOTIF_SMTP_UTILISATEUR:-}
+      NOTIF_SMTP_MOTDEPASSE: ${NOTIF_SMTP_MOTDEPASSE:-}
+      NOTIF_COURRIEL_DE: ${NOTIF_COURRIEL_DE:-}
+      NOTIF_COURRIEL_A: ${NOTIF_COURRIEL_A:-}
       # La clé du modèle vit ici, dans le service. Le navigateur ne la reçoit
       # jamais : il envoie un besoin en français et reçoit une spécification.
       BUILDER_IA_CLE: ${BUILDER_IA_CLE:-}

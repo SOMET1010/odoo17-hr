@@ -92,7 +92,8 @@ details summary{cursor:pointer;font-size:.8rem;color:var(--doux)}
 .projet button{padding:3px 9px;font-size:.72rem}
 .projet .oter{background:transparent;color:var(--doux);padding:3px 6px}
 .porte{position:fixed;inset:0;display:grid;place-items:center;padding:20px;
-  background:var(--fond);z-index:10}
+  background:var(--fond);z-index:10;align-content:center;overflow:auto}
+.porte a{color:var(--violet)}
 .guichet{width:min(400px,100%);gap:14px}
 .lien-clair{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.5);
   font-size:.76rem;padding:4px 10px}
@@ -115,6 +116,23 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
 </div>
 
 <div id="porte" class="porte" hidden>
+  <!-- CE QUE CE BLOC FAIT LÀ. Un domaine récent qui n'affiche qu'un champ
+       « mot de passe » a exactement le profil d'une page d'hameçonnage, et les
+       filtres d'entreprise le classent comme tel — sans lire le certificat ni
+       le contenu. Dire ce qu'est cet outil, à qui il appartient et où en est le
+       code coûte trois lignes, et retire le seul de ces signaux qui dépende de
+       nous. Ce n'est pas de la décoration : c'est ce qui décide si vos
+       collègues voient la page ou un écran rouge. -->
+  <div class="carte guichet" style="margin-bottom:14px">
+    <h2>Atelier Odoo</h2>
+    <p class="pied">Outil interne de fabrication de modules Odoo : décrire un
+      besoin ou déposer un module existant, obtenir un aperçu jouable puis une
+      archive installable. Le code du générateur est public —
+      <a href="https://github.com/SOMET1010/odoo17-hr">github.com/SOMET1010/odoo17-hr</a>.</p>
+    <p class="pied"><b>Accès sur invitation.</b> Cette instance n'ouvre aucun
+      compte d'elle-même : un administrateur les crée. Nous ne demandons jamais
+      d'identifiants par courriel, et cet outil n'en envoie aucun.</p>
+  </div>
   <form class="carte guichet" id="guichet">
     <h2 id="titre-porte">Connexion</h2>
     <p class="pied" id="mot-porte">Identifiez-vous pour retrouver vos projets.</p>

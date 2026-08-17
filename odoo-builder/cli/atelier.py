@@ -519,6 +519,22 @@ class Poignee(BaseHTTPRequestHandler):
             })
         if chemin == "/":
             return self._repondre(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        if chemin == "/robots.txt":
+            # Un outil interne n'a rien à faire dans un index. Et une page de
+            # connexion indexée sur un domaine récent attire précisément
+            # l'attention des classificateurs d'hameçonnage.
+            return self._repondre(200, b"User-agent: *\nDisallow: /\n",
+                                  "text/plain; charset=utf-8")
+        if chemin == "/.well-known/security.txt":
+            # Un signal que les sites d'hameçonnage n'ont jamais : à qui
+            # écrire. Servi seulement si une adresse est configurée — en
+            # publier une au hasard ne vaudrait rien.
+            contact = os.environ.get("ATELIER_CONTACT", "").strip()
+            if not contact:
+                return self._repondre(404, b"", "text/plain; charset=utf-8")
+            corps = (f"Contact: mailto:{contact}\n"
+                     "Preferred-Languages: fr, en\n").encode("utf-8")
+            return self._repondre(200, corps, "text/plain; charset=utf-8")
         if not identifie:
             return self._json(401, {"erreur": "connexion requise"})
         if self._bloque_par_mot_de_passe_provisoire(chemin):
