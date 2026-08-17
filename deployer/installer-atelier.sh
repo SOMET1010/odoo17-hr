@@ -240,10 +240,24 @@ fi
 titre "C'est en ligne"
 
 printf '\n  %bL'"'"'Atelier :%b https://%s\n\n' "$GRAS" "$FIN" "$DOMAINE"
-printf '  %bCode d'"'"'installation :%b %s\n' "$GRAS" "$FIN" "$ATELIER_INSCRIPTION"
-printf '        Il n'"'"'est demandé que pour créer le PREMIER compte, qui sera\n'
-printf '        administrateur. Faites-le maintenant : tant qu'"'"'aucun compte\n'
-printf '        n'"'"'existe, l'"'"'instance attend le sien.\n\n'
+
+# Le code n'ouvre que le PREMIER compte. Le réafficher à chaque relance, avec
+# l'injonction de s'en servir, laisserait croire qu'il vaut encore — et ferait
+# recopier un secret périmé dans un carnet, voire dans une conversation. On
+# demande donc à l'instance elle-même ce qu'il en est.
+if [[ "$joignable" == "1" ]] \
+   && curl -sS --max-time 5 "https://$DOMAINE/sante" 2>/dev/null \
+      | grep -q '"comptes_existants": *true'; then
+  printf '  %bDes comptes existent déjà.%b Le code d'"'"'installation ne sert plus :\n' \
+    "$GRAS" "$FIN"
+  printf '        seul un administrateur peut désormais créer un compte, et cela\n'
+  printf '        se fait depuis l'"'"'interface.\n\n'
+else
+  printf '  %bCode d'"'"'installation :%b %s\n' "$GRAS" "$FIN" "$ATELIER_INSCRIPTION"
+  printf '        Il n'"'"'est demandé que pour créer le PREMIER compte, qui sera\n'
+  printf '        administrateur. Faites-le maintenant : tant qu'"'"'aucun compte\n'
+  printf '        n'"'"'existe, l'"'"'instance attend le sien.\n\n'
+fi
 if [[ -z "$CLE_IA" ]]; then
   printf '  %bSans clé d'"'"'IA%b, le bouton « Concevoir » restera muet. La conversion\n' \
     "$GRAS" "$FIN"
