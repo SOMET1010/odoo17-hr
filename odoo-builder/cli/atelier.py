@@ -1057,10 +1057,16 @@ class Poignee(BaseHTTPRequestHandler):
             return self._json(403, {"erreur": "Réservé aux administrateurs."})
         etat = self.atelier.reglages.etat()
         url = (donnee.get("url") or (etat.url if etat else "")).strip()
-        # La clé n'est PAS demandée au navigateur : celle du serveur suffit,
-        # et la redemander la ferait voyager pour rien.
-        cle = self.atelier.reglages.cle()
-        if not cle and etat is None:
+        # LA CLÉ PEUT VENIR DU FORMULAIRE, et c'est le bon ordre : on la
+        # saisit, on voit ce qu'elle donne accès, on choisit. L'exiger
+        # enregistrée d'abord obligeait à connaître un nom de modèle valide
+        # AVANT d'avoir prouvé la clé — l'ordre inverse de celui où l'on
+        # travaille.
+        #
+        # Elle monte, elle ne redescend pas : cette route ne rend que des noms
+        # de modèles, jamais la clé, et rien n'est enregistré ici.
+        cle = (donnee.get("cle") or "").strip() or self.atelier.reglages.cle()
+        if not cle:
             cle = os.environ.get("BUILDER_IA_CLE") or os.environ.get(
                 "OPENAI_API_KEY", "")
         if not url:
@@ -1127,10 +1133,23 @@ class Poignee(BaseHTTPRequestHandler):
             " L'adresse est celle posée à l'installation du serveur ; si la clé "
             "n'est pas une clé OpenAI, c'est là qu'est la faute.")
         if "401" in texte or "invalid_api_key" in texte or "Unauthorized" in texte:
-            return ("Le fournisseur refuse la clé (401). Deux causes, dans "
-                    "l'ordre : la clé part au mauvais service, ou elle est "
-                    "révoquée ou incomplète. Ouvrez « Modèle » et choisissez le "
-                    "fournisseur qui correspond à votre clé." + ou)
+            # On nomme le préfixe attendu : c'est le contrôle que l'utilisateur
+            # peut faire en une seconde, sans rien ouvrir.
+            attendus = {
+                "openrouter.ai": "une clé OpenRouter commence par « sk-or-v1- »",
+                "api.groq.com": "une clé Groq commence par « gsk_ »",
+                "api.openai.com": "une clé OpenAI commence par « sk- »",
+                "api.deepseek.com": "une clé DeepSeek commence par « sk- »",
+                "moonshot": "une clé Moonshot commence par « sk- »",
+            }
+            indice = next((mot for hote, mot in attendus.items()
+                           if etat and hote in etat.url), "")
+            return ("Le fournisseur refuse la clé (401). Trois causes, dans "
+                    "l'ordre de fréquence : la clé a été recopiée incomplète, "
+                    "elle appartient à un AUTRE service, ou elle a été "
+                    "révoquée."
+                    + (f" Vérifiez le début : {indice}." if indice else "")
+                    + ou)
         if "404" in texte and ("model" in texte.lower() or "modèle" in texte):
             return ("Le fournisseur ne connaît pas ce nom de modèle (404). "
                     "Corrigez le nom dans « Modèle » — c'est un mot à changer."

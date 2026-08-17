@@ -175,25 +175,28 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <select id="m-fournisseur"></select>
     </div>
     <div>
-      <label for="m-modele">Nom du modèle</label>
-      <input id="m-modele" autocomplete="off" list="catalogue">
-      <datalist id="catalogue"></datalist>
-      <p class="pied">Ces noms changent souvent, et un modèle gratuit
-        disparaît en quelques mois. Plutôt que de deviner, demandez la liste
-        au fournisseur :</p>
-      <button type="button" class="second" id="m-catalogue">Lister ses modèles</button>
-      <p class="pied" id="mot-catalogue"></p>
-    </div>
-    <div>
-      <label for="m-url">Adresse du service</label>
-      <input id="m-url" autocomplete="off">
-    </div>
-    <div>
       <label for="m-cle">Clé</label>
       <input id="m-cle" type="password" autocomplete="off"
              placeholder="collez la clé — elle ne sera jamais réaffichée">
       <p class="pied">Elle reste sur le serveur. Cette page ne peut pas la
         relire : elle n'en revoit que les quatre derniers caractères.</p>
+    </div>
+    <button type="button" class="second" id="m-catalogue">
+      Voir les modèles auxquels cette clé donne accès</button>
+    <p class="pied" id="mot-catalogue"></p>
+    <div id="bloc-choix" hidden>
+      <label for="m-choix">Modèles disponibles</label>
+      <select id="m-choix" size="8"></select>
+    </div>
+    <div>
+      <label for="m-modele">Nom du modèle retenu</label>
+      <input id="m-modele" autocomplete="off">
+      <p class="pied">Ces noms changent souvent, et un modèle gratuit
+        disparaît en quelques mois : préférez la liste ci-dessus à la saisie.</p>
+    </div>
+    <div>
+      <label for="m-url">Adresse du service</label>
+      <input id="m-url" autocomplete="off">
     </div>
     <div id="modele-erreur" class="erreur" hidden></div>
     <div id="modele-bien" class="journal" hidden></div>
@@ -1085,7 +1088,16 @@ function remplirDepuisFournisseur() {
   $('#m-url').value = f.url;
 }
 
-$('#m-fournisseur').addEventListener('change', remplirDepuisFournisseur);
+$('#m-fournisseur').addEventListener('change', () => {
+  remplirDepuisFournisseur();
+  /* Changer de fournisseur invalide la liste précédente : la laisser
+     afficherait les modèles d'un service pour la clé d'un autre. */
+  $('#bloc-choix').hidden = true;
+  $('#mot-catalogue').textContent = '';
+});
+$('#m-choix').addEventListener('change', () => {
+  $('#m-modele').value = $('#m-choix').value;
+});
 $('#ouvrir-modele').addEventListener('click', () => {
   $('#volet-modele').hidden = false;
   $('#modele-erreur').hidden = true; $('#modele-bien').hidden = true;
@@ -1121,15 +1133,22 @@ async function appelerModele(route, corps, bouton, succes) {
 
 $('#formulaire-modele').addEventListener('submit', async evenement => {
   evenement.preventDefault();
-  await appelerModele('/modele', {
+  const enregistre = await appelerModele('/modele', {
     fournisseur: $('#m-fournisseur').value,
     modele: $('#m-modele').value,
     url: $('#m-url').value,
     cle: $('#m-cle').value,
   }, $('#m-enregistrer'), () => {
     $('#m-cle').value = '';
-    return "Enregistré. Éprouvez-le : « configuré » ne veut pas dire « répond ».";
+    return 'Enregistré. Vérification en cours…';
   });
+  /* On éprouve TOUT DE SUITE. « Configuré » ne veut pas dire « répond », et
+     laisser l'utilisateur cliquer un second bouton pour l'apprendre, c'est le
+     laisser croire que c'est fini. */
+  if (enregistre) {
+    await appelerModele('/modele/essai', {}, $('#m-essai'),
+      () => 'Enregistré, et le fournisseur répond. « Concevoir » est utilisable.');
+  }
 });
 
 /* « Éprouver » essaie CE QUI EST EN PLACE, pas ce qui est à l'écran. Choisir
@@ -1153,22 +1172,34 @@ $('#m-catalogue').addEventListener('click', async evenement => {
   try {
     const reponse = await fetch('/modele/catalogue', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url: $('#m-url').value}),
+      /* La clé du FORMULAIRE : c'est tout l'intérêt. On la saisit, on voit
+         ce à quoi elle donne accès, on choisit. Rien n'est enregistré ici. */
+      body: JSON.stringify({url: $('#m-url').value, cle: $('#m-cle').value}),
     });
     const donnee = await reponse.json();
     if (!reponse.ok) { direModele(donnee.erreur || 'Échec.', false); return; }
-    const liste = $('#catalogue');
+    const liste = $('#m-choix');
     liste.textContent = '';
     for (const nom of donnee.modeles) {
       const option = document.createElement('option');
-      option.value = nom;
+      option.value = nom; option.textContent = nom;
       liste.appendChild(option);
     }
+    $('#bloc-choix').hidden = !donnee.modeles.length;
+    if (donnee.modeles.length) {
+      liste.value = donnee.modeles[0];
+      $('#m-modele').value = donnee.modeles[0];
+    }
+    /* NE PAS DIRE « la clé est acceptée ». Chez OpenRouter, cette liste est
+       PUBLIQUE : elle répond sans clé. L'annoncer validée ici serait un
+       mensonge, et le pire : celui qui rassure juste avant l'échec. Seul
+       l'appel réel tranche — il part tout de suite après l'enregistrement. */
     $('#mot-catalogue').textContent = donnee.gratuits
-      ? `${donnee.total} modèles, dont ${donnee.gratuits} gratuits — ils sont `
-        + `en tête de la liste. Cliquez le champ ci-dessus pour la dérouler.`
-      : `${donnee.total} modèles. Cliquez le champ ci-dessus pour la dérouler.`;
-    if (donnee.modeles.length) $('#m-modele').value = donnee.modeles[0];
+      ? `${donnee.total} modèles proposés par ce service, dont ${donnee.gratuits} `
+        + `gratuits — ceux-ci sont en tête. Choisissez, puis Enregistrer : la `
+        + `clé sera éprouvée à ce moment-là, pour de bon.`
+      : `${donnee.total} modèles proposés par ce service. Choisissez, puis `
+        + `Enregistrer : la clé sera éprouvée à ce moment-là, pour de bon.`;
     direModele('', true);
   } finally { bouton.disabled = false; bouton.textContent = libelle; }
 });
