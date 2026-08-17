@@ -97,6 +97,7 @@ from spec.drafter import RedactionImpossible, SpecDrafter  # noqa: E402
 from spec.lecture import Lecture, lire, rappel_pour_la_redaction  # noqa: E402
 from spec.module_spec import ModuleSpec, SpecInvalide  # noqa: E402
 from theme.apercu import rendre as rendre_theme  # noqa: E402
+from theme.redaction import decrire  # noqa: E402
 from theme.generateur import (  # noqa: E402
     DENSITES, POLICES, Charte, ThemeInvalide, contraste, generer as generer_theme,
     texte_lisible,
@@ -325,6 +326,24 @@ class Atelier:
             "l'aspect d'Odoo, utilisez « Ou fabriquez un thème » plus bas dans "
             "la page — c'est elle qui produit les variables SCSS et le bundle "
             "d'assets.")
+
+    def decrire_theme(self, besoin: str) -> dict:
+        """Traduire une charte décrite en français en valeurs exactes.
+
+        Le modèle ne rend que des VALEURS — six caractères hexadécimaux, une
+        police prise dans une liste fermée, une densité. Le SCSS, le bundle
+        d'assets et le manifeste sortent du générateur déterministe, comme
+        toujours. Et le contraste est mesuré ici, pas accordé sur parole.
+        """
+        self.commencer("Lecture de la charte")
+        fournisseur = self.fournisseur(self.noter)
+        if fournisseur is None:
+            raise RuntimeError(
+                "Aucun fournisseur de modèle configuré. Ouvrez « Modèle » en "
+                "haut de la page pour en poser un.")
+        valeurs = decrire(fournisseur, besoin, self.noter)
+        self.terminer()
+        return {"charte": valeurs, "journal": self.journal}
 
     def analyser(self, besoin: str) -> dict:
         """Relire le besoin et rendre la liste à valider. Ne fabrique RIEN.
@@ -862,7 +881,15 @@ class Poignee(BaseHTTPRequestHandler):
 
         self.atelier.cible_courante = cible
         try:
-            if chemin in ("/analyser", "/concevoir"):
+            if chemin == "/theme/decrire":
+                besoin = (donnee.get("besoin") or "").strip()
+                if len(besoin) < 10:
+                    return self._json(400, {
+                        "erreur": "Décrivez la charte : les couleurs de "
+                                  "l'institution, l'ambiance voulue, la "
+                                  "densité de l'affichage."})
+                resultat = self.atelier.decrire_theme(besoin)
+            elif chemin in ("/analyser", "/concevoir"):
                 besoin = (donnee.get("besoin") or "").strip()
                 if len(besoin) < 15:
                     return self._json(400, {

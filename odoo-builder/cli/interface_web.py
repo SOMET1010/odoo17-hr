@@ -97,6 +97,13 @@ details summary{cursor:pointer;font-size:.8rem;color:var(--doux)}
 .guichet{width:min(400px,100%);gap:14px}
 .lien-clair{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.5);
   font-size:.76rem;padding:4px 10px}
+.voies{display:flex;flex-direction:column;gap:8px}
+.voie{display:flex;flex-direction:column;gap:3px;text-align:left;padding:14px 16px;
+  background:var(--fond);color:var(--encre);border:1px solid var(--trait);
+  font-weight:400}
+.voie:hover{border-color:var(--violet);background:var(--violet-clair)}
+.voie b{font-size:.92rem;color:var(--violet)}
+.voie span{font-size:.8rem;color:var(--doux);line-height:1.45}
 pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   background:var(--violet-clair);padding:11px;border-radius:4px;margin:8px 0 0}
 /* Une barre qui va et vient, pas une progression chiffrée : on ne sait pas
@@ -350,7 +357,39 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
 <main id="atelier" hidden>
   <div style="display:flex;flex-direction:column;gap:20px">
 
-    <div class="carte">
+    <!-- UN LOGICIEL MONTRE UNE CHOSE À LA FOIS. Tout afficher — décrire,
+         convertir, thème — oblige à choisir avant de comprendre, et à relire
+         l'écran entier à chaque étape. On demande donc d'abord CE QU'ON VEUT
+         FAIRE, et le reste s'efface. C'est aussi ce qui rend impossible de
+         décrire un thème dans la case des modules métier. -->
+    <div class="carte" id="accueil">
+      <h2>Que voulez-vous faire ?</h2>
+      <div class="voies">
+        <button type="button" class="voie" data-voie="besoin">
+          <b>Créer une application</b>
+          <span>Décrivez un besoin en français — suivi des congés, courrier,
+            missions. Vous obtenez un module Odoo installable.</span>
+        </button>
+        <button type="button" class="voie" data-voie="archive">
+          <b>Reprendre un module existant</b>
+          <span>Déposez son archive ZIP. L'Atelier le relit, dit ce qu'il n'a
+            pas su porter, et le refabrique pour la version visée.</span>
+        </button>
+        <button type="button" class="voie" data-voie="theme">
+          <b>Changer l'apparence</b>
+          <span>Couleurs, police, densité. C'est la seule voie qui modifie
+            l'aspect d'Odoo — les deux autres fabriquent des écrans.</span>
+        </button>
+      </div>
+    </div>
+
+    <p class="pied" id="fil" hidden>
+      <a href="#" id="retour">← Revenir au choix</a>
+      <span id="fil-titre" style="margin-left:8px"></span>
+    </p>
+
+
+    <div class="carte voie-besoin" hidden>
       <h2>1 · Décrivez le besoin</h2>
       <div>
         <label for="besoin">En français, comme à un collègue. Qui fait quoi, avec
@@ -367,8 +406,8 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       </div>
     </div>
 
-    <div class="carte">
-      <h2>Ou partez d'un module existant</h2>
+    <div class="carte voie-archive" hidden>
+      <h2>Reprendre un module existant</h2>
       <div>
         <label for="chemin">Chemin d'un dossier de module sur cette machine</label>
         <input id="chemin" placeholder="/chemin/vers/mon_module">
@@ -383,11 +422,25 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
         porté est listé dans le journal.</p>
     </div>
 
-    <div class="carte">
-      <h2>Ou fabriquez un thème</h2>
+    <div class="carte voie-theme" hidden>
+      <h2>Changer l'apparence</h2>
       <p class="pied">Votre charte graphique appliquée au backend. Le contraste
         est mesuré, pas supposé : une charte conçue pour du papier ne dit pas
         si une couleur peut porter du texte à l'écran.</p>
+
+      <!-- DÉCRIRE PLUTÔT QUE CHOISIR. Demander des codes hexadécimaux suppose
+           qu'on ait la charte sous les yeux, déjà convertie. La demande arrive
+           en français ; le modèle ne rend que des VALEURS, et le contraste est
+           mesuré avant d'être montré. -->
+      <div>
+        <label for="t-besoin">Décrivez la charte, en français</label>
+        <textarea id="t-besoin" style="min-height:70px"
+          placeholder="Exemple : les couleurs de l'ANSUT, un bleu institutionnel profond et un orange chaud en accent, affichage dense, avec une variante sombre."></textarea>
+      </div>
+      <button type="button" class="second" id="t-decrire">Proposer des couleurs</button>
+      <p class="pied" id="t-raison"></p>
+      <div id="t-alerte" class="erreur" hidden></div>
+
       <div>
         <label for="t-nom">Nom du thème</label>
         <input id="t-nom" value="Mon thème">
@@ -596,6 +649,48 @@ function technique(nom) {
   return ((nu || 'mon_theme') + '_backend').slice(0, 60);
 }
 
+$('#t-decrire').addEventListener('click', async evenement => {
+  const bouton = evenement.target, libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = 'En cours…';
+  afficherErreur(''); demarrerJauge('Lecture de la charte');
+  try {
+    const reponse = await fetch('/theme/decrire', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({besoin: $('#t-besoin').value}),
+    });
+    if (reponse.status === 401) { location.reload(); return; }
+    const donnee = await reponse.json();
+    afficherJournal(donnee.journal);
+    if (!reponse.ok) { afficherErreur(donnee.erreur || 'Échec.'); return; }
+    const c = donnee.charte;
+    /* On REMPLIT le formulaire, on ne fabrique pas : l'utilisateur voit les
+       couleurs, les corrige s'il veut, et lance lui-même. */
+    $('#t-nom').value = c.nom;
+    if ($('#t-technique')) $('#t-technique').value = c.technique;
+    poserCouleur('#t-primaire', c.primaire);
+    poserCouleur('#t-accent', c.accent);
+    if ($('#t-police')) $('#t-police').value = c.police;
+    if ($('#t-densite')) $('#t-densite').value = c.densite;
+    $('#t-raison').textContent = (c.raison || '')
+      + `  (contraste du blanc sur la couleur principale : ${c.contraste_primaire} pour 1)`;
+    $('#t-alerte').textContent = c.alerte || '';
+    $('#t-alerte').hidden = !c.alerte;
+  } catch (e) {
+    afficherErreur('La lecture a échoué : ' + e.message);
+  } finally {
+    arreterJauge();
+    bouton.disabled = false; bouton.textContent = libelle;
+  }
+});
+
+/* Les couleurs ont deux champs liés — la pastille et le texte. Les poser tous
+   les deux évite l'incohérence qu'on ne remarque qu'au moment de fabriquer. */
+function poserCouleur(prefixe, valeur) {
+  const pastille = $(prefixe), texte = $(prefixe + '-txt');
+  if (pastille) pastille.value = valeur;
+  if (texte) texte.value = valeur.toUpperCase();
+}
+
 $('#theme').addEventListener('click', e => appeler('/theme', {
   nom: $('#t-nom').value,
   technique: technique($('#t-nom').value),
@@ -653,6 +748,41 @@ $('#nouveau').addEventListener('click', async () => {
 });
 
 let LECTURE = null;
+
+/* ------------------------------------------------------------- les voies */
+
+const TITRES = {
+  besoin: 'Créer une application',
+  archive: 'Reprendre un module existant',
+  theme: "Changer l'apparence",
+};
+
+function allerA(voie) {
+  const choisi = !!voie;
+  $('#accueil').hidden = choisi;
+  $('#fil').hidden = !choisi;
+  $('#fil-titre').textContent = TITRES[voie] || '';
+  for (const nom of Object.keys(TITRES)) {
+    for (const carte of document.querySelectorAll('.voie-' + nom)) {
+      carte.hidden = nom !== voie;
+    }
+  }
+  /* Revenir au choix efface ce qui traînait de la voie précédente : sinon on
+     retrouve la relecture d'un besoin en fabriquant un thème. */
+  if (!choisi) {
+    $('#carte-lecture').hidden = true;
+    LECTURE = null;
+    afficherErreur('');
+  }
+}
+
+for (const bouton of document.querySelectorAll('.voie')) {
+  bouton.addEventListener('click', () => allerA(bouton.dataset.voie));
+}
+$('#retour').addEventListener('click', evenement => {
+  evenement.preventDefault();
+  allerA(null);
+});
 
 $('#analyser').addEventListener('click', async evenement => {
   const bouton = evenement.target, libelle = bouton.textContent;
@@ -907,6 +1037,7 @@ $('#deconnexion').addEventListener('click', async () => {
 async function demarrer() {
   const s = await etat();
   if ($('#atelier').hidden) return;
+  if ($('#accueil') && !$('#fil-titre').textContent) allerA(null);
   listerProjets();
   if (!$('#cible').options.length) remplirChoix(s);
 }

@@ -4651,3 +4651,59 @@ class TestRelectureAvantFabrication(unittest.TestCase):
         # Et ETAT.md doit toujours les mentionner comme restant à faire.
         for mot in ("assistants", "rapports pdf", "tâches planifiées"):
             self.assertIn(mot, texte)
+
+
+class TestThemeDecritEnFrancais(unittest.TestCase):
+    """Décrire la charte, plutôt que taper des codes hexadécimaux.
+
+    Demander « #2256A3 » suppose qu'on ait la charte sous les yeux, déjà
+    convertie. La demande arrive en français. Le modèle ne rend ici que des
+    VALEURS : le SCSS, le bundle d'assets et le manifeste continuent de sortir
+    du générateur déterministe.
+    """
+
+    def _decrire(self, reponse):
+        from ai.provider import ScriptedProvider
+        from theme.redaction import decrire
+        return decrire(ScriptedProvider([reponse]), "une charte quelconque")
+
+    def test_une_valeur_hors_liste_retombe_sur_un_defaut(self):
+        """« dense » n'existe pas — les densités sont compacte, normale,
+        confortable. Un modèle propose ce qu'il veut ; la liste, elle, est
+        fermée, et c'est nous qui tranchons."""
+        charte = self._decrire({"nom": "T", "technique": "t_ansut",
+                                "primaire": "#1F4E79", "accent": "#E07B1F",
+                                "densite": "dense", "police": "inventée"})
+        self.assertEqual(charte["densite"], "normale")
+        self.assertEqual(charte["police"], "systeme")
+
+    def test_une_couleur_mal_formee_ne_casse_rien(self):
+        charte = self._decrire({"primaire": "bleu foncé", "accent": "E07B1F"})
+        self.assertTrue(charte["primaire"].startswith("#"))
+        self.assertEqual(charte["accent"], "#E07B1F")
+
+    def test_le_nom_technique_est_toujours_utilisable(self):
+        """Il devient un nom de dossier et un identifiant Python : accents,
+        espaces et majuscules le rendraient inutilisable."""
+        charte = self._decrire({"technique": "Thème ANSUT-2026 !"})
+        self.assertRegex(charte["technique"], r"^[a-z][a-z0-9_]*$")
+
+    def test_le_contraste_est_mesure_et_annonce(self):
+        """Un modèle n'a aucune idée de ce que sa proposition donne à l'écran.
+        Le rapport de luminance, lui, se calcule."""
+        clair = self._decrire({"primaire": "#FFE680", "accent": "#1F4E79"})
+        self.assertLess(clair["contraste_primaire"], 4.5)
+        self.assertIn("4,5", clair["alerte"])
+        fonce = self._decrire({"primaire": "#1F4E79", "accent": "#E07B1F"})
+        self.assertGreater(fonce["contraste_primaire"], 4.5)
+        self.assertEqual(fonce["alerte"], "")
+
+    def test_les_valeurs_relues_font_une_charte_valide(self):
+        from theme.generateur import generer
+        from theme.redaction import en_charte
+        charte = en_charte(self._decrire({
+            "nom": "Thème ANSUT", "technique": "theme_ansut",
+            "primaire": "#1F4E79", "accent": "#E07B1F"}))
+        charte.valider()
+        fichiers = generer(charte, "17.0")
+        self.assertTrue(any(n.endswith(".scss") for n in fichiers))
