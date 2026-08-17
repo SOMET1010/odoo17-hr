@@ -1,6 +1,6 @@
 # Où en est l'Atelier
 
-Mis à jour le 16 août 2026.
+Mis à jour le 17 août 2026.
 
 Ce fichier existe parce que les sessions se terminent et que les machines
 changent. Il dit ce qui est fait **et prouvé**, ce qui reste, et dans quel
@@ -25,8 +25,10 @@ installé dans un vrai Odoo, mis à jour, et appelé. Tout le reste est marqué.
 | **Déploiement** — installeur, HTTPS, dépôt privé, addons Enterprise | Instance réelle montée puis suspendue |
 | **Comptes et isolation** — chacun ses projets | Filtre dans le SQL, pas dans le Python ; piloté au navigateur |
 | **Atelier en ligne** — pile HTTPS sans Odoo ni base | Recette jouée à chaque envoi : TLS vérifié, porte fermée, dépôt durable |
+| **Choix du modèle depuis la page** — clé posée, éprouvée, oubliée | Piloté au navigateur ; la clé ne redescend jamais |
+| **Héritage de vues** — greffer un champ sur l'écran d'un autre module | Installé dans Odoo 17, 18 et 19 réels ; le champ est **présent dans la vue servie** |
 
-229 tests.
+251 tests.
 
 ---
 
@@ -36,11 +38,11 @@ installé dans un vrai Odoo, mis à jour, et appelé. Tout le reste est marqué.
 
 C'est **la** limite. Sur le parc de production, 232 comportements ne sont pas
 portés, et ils tiennent presque tous à ce que la spécification ne sait pas
-encore dire :
+encore dire. Le premier de la liste vient de tomber — l'héritage de vues est
+livré et éprouvé — et il était le plus rentable :
 
 | Manquant | Ce qu'il débloque |
 |---|---|
-| **Héritage de vues** (`xpath`) | Étendre un module tiers au lieu de le refaire — c'est le besoin le plus souvent formulé |
 | **Assistants** (wizards) | Refus motivé, assistants de saisie |
 | **Rapports PDF** (QWeb) | Attestations, bordereaux |
 | **Tâches planifiées** (`ir.cron`) | Relances, contrôles automatiques |
@@ -49,16 +51,19 @@ encore dire :
 | **Données initiales** | Types de congés, catégories livrées avec le module |
 | **Vues gantt, pivot, graphe, calendrier** | Écrans d'analyse |
 
-Chacun est un chantier indépendant. L'héritage de vues est le plus rentable :
-il transforme l'Atelier d'un fabricant de modules neufs en un outil qui
-améliore l'existant.
+Chacun est un chantier indépendant.
 
-### 2. Mode extension
+### 2. Mode extension — la moitié est faite
 
-Un module qui hérite d'un module tiers et l'enrichit, sans en copier une
-ligne. Demande l'héritage de vues ci-dessus. C'est la réponse propre à
-« ne pas refaire la roue » — et la seule qui soit propre juridiquement pour
-un module payant.
+Un module qui hérite d'un module tiers et l'enrichit sans en copier une ligne :
+**ça marche**, pour les champs et les écrans. `specs/extension_employe.json`
+ajoute deux champs à la fiche employé d'Odoo et les greffe dans son formulaire,
+sur les trois versions.
+
+Ce qui manque pour que le mode soit complet : greffer des **boutons** et des
+**onglets** (donc des ancres qui ne sont pas des champs), et surcharger une
+méthode existante. C'est la suite naturelle, et elle est bien plus petite
+maintenant que la première marche est franchie.
 
 ### 3. Assembleur pour `addons_odoo17_mtnd`
 
@@ -83,7 +88,9 @@ d'Odoo 18 et le dossier écarté par la 19.
 
 - **Le bouton « Concevoir » de l'Atelier**, avec un vrai modèle. La chaîne
   besoin → spécification a été prouvée en recette avec un fournisseur réel,
-  mais pas encore à travers cette interface.
+  mais pas encore à travers cette interface. L'instance en ligne existe
+  désormais, et le fournisseur s'y choisit depuis la page : il ne manque
+  qu'une clé.
 - **Les modules du parc converti** : ils passent la validation statique, ils
   ne sont pas installés. Le banc existe (`.docker/verifier-parc.sh`) ; il
   demande un Odoo.
