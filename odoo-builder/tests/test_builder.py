@@ -3425,3 +3425,72 @@ class TestGreffeDeVue(unittest.TestCase):
         droits = next((c for n, c in fichiers.items()
                        if n.endswith("ir.model.access.csv")), "")
         self.assertNotIn("hr_employee", droits)
+
+
+class TestGestionDesComptes(unittest.TestCase):
+    """Ouvrir un accès à quelqu'un, et pouvoir le retirer.
+
+    Sans écran, l'inscription était refermée pour de bon : le code
+    d'installation ne sert qu'une fois, et l'API n'accepte la création que d'un
+    administrateur. On avait donc une instance en ligne où le propriétaire ne
+    pouvait ouvrir l'accès à personne.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def test_un_administrateur_ouvre_et_retire_un_acces(self):
+        self._premier_compte()
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "dev1", "motdepasse": "une-phrase-pour-le-dev"})
+        self.assertEqual(code, 200)
+        self.assertEqual(donnee["compte"]["role"], "membre")
+
+        _, liste, _ = self._appel("/comptes")
+        self.assertEqual([c["nom"] for c in liste["comptes"]], ["pierre", "dev1"])
+
+        code, _, _ = self._appel("/compte/supprimer", {"nom": "dev1"})
+        self.assertEqual(code, 200)
+        _, liste, _ = self._appel("/comptes")
+        self.assertEqual([c["nom"] for c in liste["comptes"]], ["pierre"])
+
+    def test_un_membre_ne_voit_pas_la_liste_des_comptes(self):
+        """Savoir qui a un accès, c'est savoir quels noms attaquer."""
+        self._premier_compte()
+        self._appel("/inscription", {"nom": "dev1",
+                                     "motdepasse": "une-phrase-pour-le-dev"})
+        self.jeton = ""
+        self._appel("/connexion", {"nom": "dev1",
+                                   "motdepasse": "une-phrase-pour-le-dev"})
+        code, _, _ = self._appel("/comptes")
+        self.assertEqual(code, 403)
+        code, _, _ = self._appel("/compte/supprimer", {"nom": "pierre"})
+        self.assertEqual(code, 403)
+        # Et le refus n'a rien supprimé.
+        import atelier as module
+        self.assertIsNotNone(module.Poignee.atelier.comptes.compte("pierre"))
+
+    def test_l_administrateur_ne_peut_pas_se_supprimer_lui_meme(self):
+        """Sinon l'instance se retrouve sans administrateur, donc sans moyen
+        d'en créer un : l'inscription est refermée. On se verrouille dehors."""
+        self._premier_compte()
+        code, donnee, _ = self._appel("/compte/supprimer", {"nom": "pierre"})
+        self.assertEqual(code, 400)
+        self.assertIn("propre compte", donnee["erreur"])
+
+    def test_retirer_un_acces_ne_detruit_pas_son_travail(self):
+        """Fermer une porte n'est pas effacer du travail."""
+        import atelier as module
+        self._premier_compte()
+        self._appel("/inscription", {"nom": "dev1",
+                                     "motdepasse": "une-phrase-pour-le-dev"})
+        compte = module.Poignee.atelier.comptes.compte("dev1")
+        module.Poignee.atelier.depot.enregistrer(
+            nom="Son module", genre="module", cible="17.0", technique="x",
+            contenu={"v": 1}, horodatage="2026-08-17T10:00:00",
+            proprietaire=compte.id)
+        self._appel("/compte/supprimer", {"nom": "dev1"})
+        self.assertEqual(len(module.Poignee.atelier.depot.lister(compte.id)), 1)

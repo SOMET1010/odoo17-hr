@@ -502,6 +502,12 @@ class Poignee(BaseHTTPRequestHandler):
             return self._repondre(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if not identifie:
             return self._json(401, {"erreur": "connexion requise"})
+        if chemin == "/comptes":
+            if not (self.compte and self.compte.administrateur):
+                return self._json(403, {
+                    "erreur": "Réservé aux administrateurs."})
+            return self._json(200, {
+                "comptes": self.atelier.comptes.journal_des_comptes()})
         if chemin == "/projets":
             return self._json(200, {
                 "projets": [p.en_dict()
@@ -545,6 +551,8 @@ class Poignee(BaseHTTPRequestHandler):
             return self._connecter(donnee)
         if chemin == "/inscription":
             return self._inscrire(donnee)
+        if chemin == "/compte/supprimer":
+            return self._supprimer_compte(donnee)
         if chemin == "/modele":
             return self._poser_modele(donnee)
         if chemin == "/modele/oublier":
@@ -722,6 +730,23 @@ class Poignee(BaseHTTPRequestHandler):
             self.atelier.compte = compte.id
             self._poser_cookie(jeton)
         return self._json(200, {"compte": compte.en_dict(), "premier": premier})
+
+    def _supprimer_compte(self, donnee: dict):
+        if not (self.compte and self.compte.administrateur):
+            return self._json(403, {"erreur": "Réservé aux administrateurs."})
+        nom = (donnee.get("nom") or "").strip()
+        # Se supprimer soi-même laisserait une instance sans administrateur,
+        # donc sans moyen d'en créer un : l'inscription est refermée. On
+        # refuse plutôt que de laisser quelqu'un se verrouiller dehors.
+        if nom == self.compte.nom:
+            return self._json(400, {
+                "erreur": "On ne supprime pas son propre compte : plus "
+                          "personne ne pourrait en créer."})
+        if not self.atelier.comptes.supprimer(nom):
+            return self._json(404, {"erreur": f"Compte « {nom} » introuvable."})
+        # Ses projets lui survivent : fermer une porte n'est pas effacer du
+        # travail.
+        return self._json(200, {"supprime": nom})
 
     # -------------------------------------------------------------- modèle
 

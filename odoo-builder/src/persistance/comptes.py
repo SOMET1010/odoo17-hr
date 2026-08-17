@@ -162,6 +162,37 @@ class Comptes:
             ).fetchone()
         return Compte(ligne["id"], ligne["nom"], ligne["role"]) if ligne else None
 
+    def lister(self) -> list[Compte]:
+        """Qui a accès, pour que l'administrateur puisse le savoir.
+
+        Sans cette liste, on ouvre des accès sans jamais pouvoir en faire
+        l'inventaire — et on découvre un compte oublié le jour où quelqu'un
+        s'en sert.
+        """
+        with self._lien() as lien:
+            lignes = lien.execute(
+                "SELECT id, nom, role, cree_le, vu_le FROM compte "
+                "ORDER BY cree_le").fetchall()
+        return [Compte(l["id"], l["nom"], l["role"]) for l in lignes]
+
+    def journal_des_comptes(self) -> list[dict]:
+        """La même liste, avec les dates — pour l'écran, pas pour la logique."""
+        with self._lien() as lien:
+            lignes = lien.execute(
+                "SELECT nom, role, cree_le, vu_le FROM compte ORDER BY cree_le"
+            ).fetchall()
+        return [dict(l) for l in lignes]
+
+    def supprimer(self, nom: str) -> bool:
+        """Retirer un accès. Les projets du compte, eux, restent.
+
+        Les effacer avec lui ferait disparaître du travail au moment précis
+        où l'on veut seulement fermer une porte.
+        """
+        with self._lien() as lien:
+            curseur = lien.execute("DELETE FROM compte WHERE nom = ?", (nom,))
+            return curseur.rowcount > 0
+
     def combien(self) -> int:
         with self._lien() as lien:
             return lien.execute("SELECT COUNT(*) AS n FROM compte").fetchone()["n"]

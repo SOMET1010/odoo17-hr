@@ -107,6 +107,7 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   <span style="margin-left:auto;display:flex;gap:14px;align-items:center">
     <span class="etat" id="etat">…</span>
     <button class="lien-clair" id="ouvrir-modele" hidden>Modèle</button>
+    <button class="lien-clair" id="ouvrir-comptes" hidden>Comptes</button>
     <span class="etat" id="qui" hidden></span>
     <button class="lien-clair" id="deconnexion" hidden>Se déconnecter</button>
   </span>
@@ -167,6 +168,35 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <button type="button" class="second" id="m-essai">Éprouver</button>
       <button type="button" class="second" id="m-oublier">Oublier la clé</button>
       <button type="button" class="second" id="m-fermer">Fermer</button>
+    </div>
+  </form>
+</div>
+
+<div id="volet-comptes" class="porte" hidden>
+  <form class="carte guichet" id="formulaire-compte" style="width:min(560px,100%)">
+    <h2>Qui a accès à cet Atelier</h2>
+    <div id="liste-comptes" class="projets"></div>
+    <p class="pied">Créer un accès pour quelqu'un. Le mot de passe est choisi
+      ici et transmis par vous : il n'existe aucun envoi de courriel, donc
+      aucun lien d'activation à intercepter.</p>
+    <div class="rangee">
+      <div>
+        <label for="c-nom">Nom d'utilisateur</label>
+        <input id="c-nom" autocomplete="off">
+      </div>
+      <div>
+        <label for="c-mdp">Mot de passe provisoire</label>
+        <input id="c-mdp" type="text" autocomplete="off">
+      </div>
+    </div>
+    <p class="pied">Au moins 12 caractères. Une phrase dont on se souvient vaut
+      mieux qu'un mot compliqué.</p>
+    <div id="compte-erreur" class="erreur" hidden></div>
+    <div id="compte-bien" class="journal" hidden></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="submit" id="c-creer">Créer l'accès</button>
+      <button type="button" class="second" id="c-hasard">Proposer un mot de passe</button>
+      <button type="button" class="second" id="c-fermer">Fermer</button>
     </div>
   </form>
 </div>
@@ -579,6 +609,85 @@ function remplirChoix(s) {
   if ($('#t-densite').querySelector('[value=normale]')) $('#t-densite').value = 'normale';
 }
 
+/* -------------------------------------------------------------- comptes */
+
+async function listerComptes() {
+  const reponse = await fetch('/comptes');
+  if (!reponse.ok) return;
+  const donnee = await reponse.json();
+  const boite = $('#liste-comptes');
+  boite.textContent = '';
+  for (const c of donnee.comptes) {
+    const ligne = document.createElement('div');
+    ligne.className = 'projet';
+    const nom = document.createElement('span');
+    nom.className = 'nom';
+    nom.textContent = c.nom;
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = (c.role === 'administrateur' ? 'admin' : 'membre')
+      + ' · ' + (c.vu_le ? 'vu le ' + c.vu_le.slice(0, 10) : 'jamais connecté');
+    const oter = document.createElement('button');
+    oter.className = 'oter'; oter.type = 'button'; oter.textContent = '×';
+    oter.title = "Retirer l'accès (les projets sont conservés)";
+    oter.addEventListener('click', async () => {
+      const reponse = await fetch('/compte/supprimer', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({nom: c.nom}),
+      });
+      const donnee = await reponse.json();
+      if (!reponse.ok) { direCompte(donnee.erreur || 'Échec.', false); return; }
+      direCompte(`Accès de « ${c.nom} » retiré. Ses projets sont conservés.`, true);
+      listerComptes();
+    });
+    ligne.append(nom, meta, oter);
+    boite.appendChild(ligne);
+  }
+}
+
+function direCompte(texte, bon) {
+  const boite = $(bon ? '#compte-bien' : '#compte-erreur');
+  $(bon ? '#compte-erreur' : '#compte-bien').hidden = true;
+  boite.textContent = texte; boite.hidden = !texte;
+}
+
+$('#ouvrir-comptes').addEventListener('click', () => {
+  $('#volet-comptes').hidden = false;
+  direCompte('', true); direCompte('', false);
+  listerComptes();
+});
+$('#c-fermer').addEventListener('click', () => { $('#volet-comptes').hidden = true; });
+
+/* Un mot de passe proposé par la machine vaut mieux qu'un mot de passe choisi
+   à la hâte pour un collègue — et « crypto » tire vraiment au sort, là où
+   Math.random ne le prétend même pas. */
+$('#c-hasard').addEventListener('click', () => {
+  const mots = ['atelier', 'module', 'chantier', 'registre', 'bordereau',
+                'greffe', 'version', 'facture', 'dossier', 'mission'];
+  const tirage = new Uint32Array(4);
+  crypto.getRandomValues(tirage);
+  $('#c-mdp').value = Array.from(tirage.slice(0, 3))
+    .map(n => mots[n % mots.length]).join('-') + '-' + (tirage[3] % 100);
+});
+
+$('#formulaire-compte').addEventListener('submit', async evenement => {
+  evenement.preventDefault();
+  const bouton = $('#c-creer'), libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = '…';
+  try {
+    const reponse = await fetch('/inscription', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({nom: $('#c-nom').value, motdepasse: $('#c-mdp').value}),
+    });
+    const donnee = await reponse.json();
+    if (!reponse.ok) { direCompte(donnee.erreur || 'Échec.', false); return; }
+    direCompte(`Accès créé pour « ${donnee.compte.nom} ». Transmettez-lui le `
+      + `mot de passe : il n'est affiché qu'ici, et jamais réaffiché ensuite.`, true);
+    $('#c-nom').value = '';
+    listerComptes();
+  } finally { bouton.disabled = false; bouton.textContent = libelle; }
+});
+
 /* --------------------------------------------------------------- modèle */
 
 let FOURNISSEURS = {};
@@ -597,6 +706,7 @@ function peindreModele(s) {
      réservé aux administrateurs, et le bouton ne s'affiche pas autrement. */
   const patron = !!(s.compte && s.compte.role === 'administrateur');
   $('#ouvrir-modele').hidden = !patron;
+  $('#ouvrir-comptes').hidden = !patron;
 
   const choix = $('#m-fournisseur');
   if (!choix.options.length) {
