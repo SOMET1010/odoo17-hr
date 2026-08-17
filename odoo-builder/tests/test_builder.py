@@ -4543,3 +4543,111 @@ class TestAvertissementApparence(unittest.TestCase):
         thème. On prévient, on n'interdit pas."""
         self.assertIsNone(self.atelier.prevenir_si_apparence(
             "thème, couleurs, mode sombre, logo"))
+
+
+class TestRelectureAvantFabrication(unittest.TestCase):
+    """Soumettre ce qu'on a compris AVANT de fabriquer.
+
+    Un cahier des charges de thème a produit sept modèles, treize vues, une
+    validation passée — et pas une ligne de style. Personne ne pouvait le
+    savoir avant l'installation. La faute n'est pas dans le générateur, qui a
+    fait ce qu'on lui demandait : elle est dans l'enchaînement, où rien
+    n'était soumis à celui qui sait.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        os.environ["ATELIER_DEPOT"] = os.path.join(self._dossier.name, "a.sqlite")
+
+    def test_le_hors_perimetre_est_calcule_jamais_demande_au_modele(self):
+        """Demander à un modèle « qu'est-ce que tu ne sauras pas faire »
+        revient à lui demander de connaître NOS limites : il répondrait
+        vraisemblablement, c'est-à-dire au hasard. Une limite annoncée au
+        hasard est pire que pas de limite."""
+        from spec.lecture import hors_perimetre
+        points = hors_perimetre(
+            "Je veux un thème backend avec une barre latérale et un mode sombre.")
+        self.assertEqual([p["sujet"] for p in points], ["apparence"])
+        self.assertIn("fabriquez un thème", points[0]["explication"])
+
+    def test_le_besoin_qui_a_echoue_est_desormais_annonce(self):
+        """Le cas réel : un cahier des charges de thème, décrit dans la voie
+        des modules métier."""
+        from spec.lecture import hors_perimetre
+        points = hors_perimetre(
+            "Thème backend Community : sidebar verticale, mode sombre, écrans "
+            "de connexion brandés, portail web pour les clients, rapport PDF "
+            "mensuel et relance automatique toutes les nuits.")
+        sujets = {p["sujet"] for p in points}
+        self.assertIn("apparence", sujets)
+        self.assertIn("portail", sujets)
+        self.assertIn("rapport", sujets)
+        self.assertIn("planification", sujets)
+
+    def test_un_besoin_metier_ordinaire_n_a_rien_hors_perimetre(self):
+        from spec.lecture import hors_perimetre
+        self.assertEqual(hors_perimetre(
+            "Je veux suivre les demandes de congé : agent, dates, motif, et "
+            "une validation par le supérieur."), [])
+
+    def test_la_relecture_survit_a_une_reponse_incomplete(self):
+        """Un modèle gratuit rend parfois un objet à moitié rempli. Ce n'est
+        pas une raison pour perdre l'analyse."""
+        from ai.provider import ScriptedProvider
+        from spec.lecture import lire
+        lecture = lire(ScriptedProvider([{"comprend": "Suivre les congés"}]),
+                       "Je veux suivre les congés des agents.")
+        self.assertEqual(lecture.comprend, "Suivre les congés")
+        self.assertEqual(lecture.modeles, [])
+        self.assertFalse(lecture.vide)
+
+    def test_une_reponse_hors_sujet_ne_passe_pas_pour_une_relecture(self):
+        from ai.provider import ScriptedProvider
+        from spec.lecture import lire
+        lecture = lire(ScriptedProvider([{"autre": "chose"}]), "un besoin")
+        self.assertTrue(lecture.vide)
+
+    def test_la_relecture_validee_est_repassee_au_redacteur(self):
+        """Sinon on demanderait son avis à quelqu'un pour ensuite l'ignorer."""
+        from spec.lecture import Lecture, rappel_pour_la_redaction
+        rappel = rappel_pour_la_redaction(Lecture(
+            comprend="Suivre les congés",
+            modeles=[{"nom": "Demande", "champs": ["Agent", "Motif"]}],
+            circuit=["Brouillon", "Soumise", "Approuvée"]))
+        self.assertIn("validée par l'utilisateur", rappel)
+        self.assertIn("Agent, Motif", rappel)
+        self.assertIn("Brouillon → Soumise → Approuvée", rappel)
+
+    def test_analyser_ne_fabrique_rien(self):
+        """L'étape sert à décider, pas à produire : aucun projet ne doit
+        apparaître avant l'accord."""
+        from ai.provider import ScriptedProvider
+        from atelier import Atelier
+        atelier = Atelier()
+        atelier.fournisseur = lambda journal=None: ScriptedProvider([
+            {"comprend": "Suivre les congés", "modeles": [], "ecrans": []}])
+        resultat = atelier.analyser("Je veux suivre les congés des agents.")
+        self.assertIn("lecture", resultat)
+        self.assertIsNone(atelier.spec)
+        self.assertIsNone(atelier.projet)
+        self.assertEqual(atelier.depot.lister(""), [])
+
+    def test_les_deux_listes_de_limites_se_repondent(self):
+        """La table du hors-périmètre est le miroir de « ce qui reste » dans
+        ETAT.md. Quand un chantier est livré, on retire sa ligne des deux — ce
+        contrôle empêche d'en oublier une, et donc d'annoncer une limite qui
+        n'existe plus."""
+        from spec.lecture import HORS_PERIMETRE
+        etat = os.path.join(os.path.dirname(RACINE), "ETAT.md")
+        with open(etat, encoding="utf-8") as fichier:
+            texte = fichier.read().lower()
+        # L'héritage de vues a été livré : il ne doit PLUS être annoncé comme
+        # une limite.
+        self.assertNotIn("heritage", HORS_PERIMETRE)
+        for sujet in ("portail", "assistant", "rapport", "planification"):
+            self.assertIn(sujet, HORS_PERIMETRE)
+        # Et ETAT.md doit toujours les mentionner comme restant à faire.
+        for mot in ("assistants", "rapports pdf", "tâches planifiées"):
+            self.assertIn(mot, texte)

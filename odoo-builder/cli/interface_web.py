@@ -363,7 +363,7 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
           <label for="cible">Version d'Odoo visée</label>
           <select id="cible"></select>
         </div>
-        <button id="concevoir">Concevoir</button>
+        <button id="analyser">Analyser le besoin</button>
       </div>
     </div>
 
@@ -457,6 +457,26 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       </details>
     </div>
     <div id="erreur" class="erreur" hidden></div>
+
+    <!-- LA RELECTURE, AVANT TOUTE FABRICATION. C'est l'étape qui manquait :
+         on passait du besoin au code sans que rien ne soit soumis à celui qui
+         sait. Un contresens ne se voyait qu'une fois le module installé. -->
+    <div class="carte" id="carte-lecture" hidden>
+      <h2>Ce que j'ai compris — corrigez avant que je fabrique</h2>
+      <p class="pied" id="lecture-comprend"></p>
+      <div id="lecture-hors" hidden></div>
+      <div id="lecture-corps"></div>
+      <div>
+        <label for="lecture-ajout">À corriger ou à ajouter (facultatif)</label>
+        <textarea id="lecture-ajout" style="min-height:80px"
+          placeholder="Exemple : le motif de refus est obligatoire ; retirez le champ « budget »."></textarea>
+      </div>
+      <div class="rangee">
+        <button id="fabriquer">C'est bien ça — fabriquer le module</button>
+        <button class="second" id="abandonner">Reprendre le besoin</button>
+      </div>
+    </div>
+
     <div id="zone-apercu"><p class="vide">L'aperçu s'affichera ici.<br>
       Décrivez un besoin, ou convertissez un module existant.</p></div>
   </div>
@@ -632,10 +652,89 @@ $('#nouveau').addEventListener('click', async () => {
   listerProjets();
 });
 
-$('#concevoir').addEventListener('click', e => {
+let LECTURE = null;
+
+$('#analyser').addEventListener('click', async evenement => {
+  const bouton = evenement.target, libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = 'En cours…';
+  afficherErreur('');
+  demarrerJauge('Relecture du besoin');
+  try {
+    const reponse = await fetch('/analyser', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({besoin: $('#besoin').value}),
+    });
+    if (reponse.status === 401) { location.reload(); return; }
+    const donnee = await reponse.json();
+    afficherJournal(donnee.journal);
+    if (!reponse.ok) { afficherErreur(donnee.erreur || 'Échec.'); return; }
+    LECTURE = donnee.lecture;
+    peindreLecture(LECTURE);
+  } catch (e) {
+    afficherErreur("L'analyse a échoué : " + e.message);
+  } finally {
+    arreterJauge();
+    bouton.disabled = false; bouton.textContent = libelle;
+  }
+});
+
+function peindreLecture(lecture) {
+  $('#carte-lecture').hidden = false;
+  $('#lecture-comprend').textContent = lecture.comprend || '';
+
+  /* CE QUI RESTERA DEHORS, EN PREMIER ET EN ROUGE. C'est le renseignement qui
+     évite de découvrir après installation qu'un module ne fait pas ce qu'on
+     attendait — ou ne fait rien du tout. */
+  const hors = $('#lecture-hors');
+  hors.textContent = '';
+  hors.hidden = !(lecture.hors_perimetre || []).length;
+  for (const point of lecture.hors_perimetre || []) {
+    const bloc = document.createElement('div');
+    bloc.className = 'erreur';
+    bloc.style.marginBottom = '8px';
+    bloc.textContent = 'Ne sera PAS fait — ' + point.explication;
+    hors.appendChild(bloc);
+  }
+
+  const corps = $('#lecture-corps');
+  corps.textContent = '';
+  const section = (titre, lignes) => {
+    if (!lignes || !lignes.length) return;
+    const h = document.createElement('p');
+    h.className = 'pied';
+    h.style.marginBottom = '2px';
+    h.innerHTML = '<b>' + titre + '</b>';
+    corps.appendChild(h);
+    const ul = document.createElement('ul');
+    ul.style.margin = '0 0 10px'; ul.style.paddingLeft = '18px';
+    ul.style.fontSize = '.86rem';
+    for (const ligne of lignes) {
+      const li = document.createElement('li');
+      li.textContent = ligne;
+      ul.appendChild(li);
+    }
+    corps.appendChild(ul);
+  };
+  section('Modèles', (lecture.modeles || []).map(m =>
+    `${m.nom || '?'} — ${(m.champs || []).join(', ')}`));
+  section('Écrans', lecture.ecrans);
+  section('Circuit de validation', lecture.circuit);
+  section('Points sur lesquels j\'ai dû choisir', lecture.questions);
+}
+
+$('#abandonner').addEventListener('click', () => {
+  $('#carte-lecture').hidden = true;
+  LECTURE = null;
+});
+
+$('#fabriquer').addEventListener('click', e => {
+  const ajout = $('#lecture-ajout').value.trim();
+  const besoin = ajout
+    ? $('#besoin').value + '\n\nCorrections apportées par l\'utilisateur : ' + ajout
+    : $('#besoin').value;
   demarrerJauge('Conception de la spécification');
-  appeler('/concevoir', {besoin: $('#besoin').value}, e.target)
-    .finally(arreterJauge);
+  appeler('/concevoir', {besoin: besoin, lecture: LECTURE}, e.target)
+    .finally(() => { arreterJauge(); $('#carte-lecture').hidden = true; });
 });
 $('#envoyer').addEventListener('click', async evenement => {
   const fichier = $('#archive').files[0];
@@ -1174,8 +1273,8 @@ function peindreModele(s) {
   peindreFile(s.file);
   $('#etat').textContent = s.fournisseur
     ? 'modèle configuré' : 'aucun modèle — conversion seule';
-  $('#concevoir').disabled = !s.fournisseur;
-  $('#concevoir').title = s.fournisseur ? ''
+  $('#analyser').disabled = !s.fournisseur;
+  $('#analyser').title = s.fournisseur ? ''
     : "Aucun modèle : ouvrez « Modèle » en haut de la page.";
   /* Changer de modèle, c'est décider où partent les besoins qu'on décrit :
      réservé aux administrateurs, et le bouton ne s'affiche pas autrement. */

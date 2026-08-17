@@ -94,6 +94,7 @@ from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
 from preview.page import rendre  # noqa: E402
 from repair.repair_loop import _en_dict  # noqa: E402
 from spec.drafter import RedactionImpossible, SpecDrafter  # noqa: E402
+from spec.lecture import Lecture, lire, rappel_pour_la_redaction  # noqa: E402
 from spec.module_spec import ModuleSpec, SpecInvalide  # noqa: E402
 from theme.apercu import rendre as rendre_theme  # noqa: E402
 from theme.generateur import (  # noqa: E402
@@ -325,7 +326,25 @@ class Atelier:
             "la page — c'est elle qui produit les variables SCSS et le bundle "
             "d'assets.")
 
-    def concevoir(self, besoin: str, cible: str) -> dict:
+    def analyser(self, besoin: str) -> dict:
+        """Relire le besoin et rendre la liste à valider. Ne fabrique RIEN.
+
+        C'est l'étape qui manquait : on passait du besoin au code sans que
+        rien ne soit soumis à celui qui sait. Un contresens ne se voyait
+        qu'une fois le module installé — quand il ne faisait pas ce qu'on
+        attendait, ou rien du tout.
+        """
+        self.commencer("Relecture du besoin")
+        fournisseur = self.fournisseur(self.noter)
+        if fournisseur is None:
+            raise RuntimeError(
+                "Aucun fournisseur de modèle configuré. Ouvrez « Modèle » en "
+                "haut de la page pour en poser un.")
+        lecture = lire(fournisseur, besoin, self.noter)
+        self.terminer()
+        return {"lecture": lecture.en_dict(), "journal": self.journal}
+
+    def concevoir(self, besoin: str, cible: str, lecture: dict | None = None) -> dict:
         self.commencer("Conception de la spécification")
         self.prevenir_si_apparence(besoin)
         fournisseur = self.fournisseur(self.noter)
@@ -335,7 +354,13 @@ class Atelier:
                 "haut de la page pour en poser un — la clé reste sur le "
                 "serveur, elle ne redescend jamais dans le navigateur."
             )
-        spec = SpecDrafter(fournisseur).draft(besoin, self.noter)
+        # La relecture VALIDÉE fait foi. Sans cela, on demanderait son avis à
+        # quelqu'un pour ensuite l'ignorer.
+        rappel = rappel_pour_la_redaction(Lecture(**{
+            c: v for c, v in (lecture or {}).items()
+            if c in Lecture.__dataclass_fields__}))
+        spec = SpecDrafter(fournisseur).draft(
+            (besoin + "\n\n" + rappel) if rappel else besoin, self.noter)
         spec.cible = cible
         return self.retenir(spec)
 
@@ -837,14 +862,17 @@ class Poignee(BaseHTTPRequestHandler):
 
         self.atelier.cible_courante = cible
         try:
-            if chemin == "/concevoir":
+            if chemin in ("/analyser", "/concevoir"):
                 besoin = (donnee.get("besoin") or "").strip()
                 if len(besoin) < 15:
                     return self._json(400, {
                         "erreur": "Décrivez le besoin en quelques phrases : "
                                   "qui fait quoi, avec quelles informations, et "
                                   "quelles étapes de validation."})
-                resultat = self.atelier.concevoir(besoin, cible)
+                resultat = (self.atelier.analyser(besoin)
+                            if chemin == "/analyser"
+                            else self.atelier.concevoir(besoin, cible,
+                                                        donnee.get("lecture")))
             elif chemin == "/convertir":
                 if self.server.ouvert:
                     # Le chemin désignerait un dossier du SERVEUR. Sur une
