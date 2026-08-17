@@ -130,8 +130,10 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       archive installable. Le code du générateur est public —
       <a href="https://github.com/SOMET1010/odoo17-hr">github.com/SOMET1010/odoo17-hr</a>.</p>
     <p class="pied"><b>Accès sur invitation.</b> Cette instance n'ouvre aucun
-      compte d'elle-même : un administrateur les crée. Nous ne demandons jamais
-      d'identifiants par courriel, et cet outil n'en envoie aucun.</p>
+      compte d'elle-même : un administrateur envoie un lien, et vous choisissez
+      vous-même votre nom et votre mot de passe — personne d'autre ne le
+      connaît. Nous ne demandons jamais d'identifiants par courriel, et cet
+      outil n'en envoie aucun.</p>
   </div>
   <form class="carte guichet" id="guichet">
     <h2 id="titre-porte">Connexion</h2>
