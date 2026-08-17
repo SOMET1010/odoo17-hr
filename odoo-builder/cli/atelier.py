@@ -71,6 +71,7 @@ sys.path.insert(0, os.path.join(RACINE, "src"))
 import datetime  # noqa: E402
 
 from ai.provider import OpenAIProvider, fournisseur_configure  # noqa: E402
+from ai.routeur import Etape, RouterProvider  # noqa: E402
 # Le paquet s'appelle « persistance » et non « atelier » : ce script porte
 # déjà ce nom, et le dossier d'un script passe en tête du chemin d'import.
 # « import atelier.depot » retombait donc sur le script lui-même — une panne
@@ -166,6 +167,25 @@ class Atelier:
         l'amorçage — celui de l'installeur — et le recours si l'on efface le
         réglage.
         """
+        # PLUSIEURS CLÉS : on les essaie dans l'ordre. Un seul fournisseur,
+        # c'est une panne unique — quota du jour épuisé, service en
+        # maintenance, clé révoquée par un collègue — et l'Atelier ne sait
+        # plus rédiger. Le routeur bascule sur le suivant quand l'un est
+        # INDISPONIBLE ; il ne bascule jamais parce qu'une spécification est
+        # perfectible, ce cas-là appartient au validateur.
+        file = self.reglages.fournisseurs()
+        if file:
+            if journal:
+                journal(f"  {len(file)} fournisseur(s) en file : "
+                        + ", ".join(f["service"] for f in file))
+            return RouterProvider(
+                etapes=[Etape(nom=f"{f['service']} ({f['modele']})",
+                              fournisseur=OpenAIProvider(
+                                  cle_api=f["cle"], modele=f["modele"],
+                                  url=f["url"]))
+                        for f in file],
+                journal=journal or (lambda _: None))
+
         etat = self.reglages.etat()
         if etat is not None:
             if journal:
@@ -516,6 +536,8 @@ class Poignee(BaseHTTPRequestHandler):
                 "fournisseur": self.atelier.fournisseur(None) is not None,
                 "modele": (self.atelier.reglages.etat().en_dict()
                            if self.atelier.reglages.etat() else None),
+                # La file, sans aucune clé entière.
+                "file": self.atelier.reglages.file_visible(),
                 "fournisseurs": {c: {"nom": n, "url": u, "modele": m}
                                  for c, (n, u, m) in FOURNISSEURS.items()},
                 "cibles": list(CIBLES),
@@ -638,6 +660,20 @@ class Poignee(BaseHTTPRequestHandler):
             return self._poser_modele(donnee)
         if chemin == "/modele/oublier":
             return self._oublier_modele()
+        if chemin == "/modele/ajouter":
+            return self._ajouter_fournisseur(donnee)
+        if chemin == "/modele/oter":
+            if not (self.compte and self.compte.administrateur):
+                return self._json(403, {"erreur": "Réservé aux administrateurs."})
+            ote = self.atelier.reglages.oter_fournisseur(donnee.get("id") or "")
+            return self._json(200 if ote else 404, {"ote": ote} if ote
+                              else {"erreur": "Fournisseur introuvable."})
+        if chemin == "/modele/deplacer":
+            if not (self.compte and self.compte.administrateur):
+                return self._json(403, {"erreur": "Réservé aux administrateurs."})
+            bouge = self.atelier.reglages.deplacer_fournisseur(
+                donnee.get("id") or "", bool(donnee.get("haut")))
+            return self._json(200, {"deplace": bouge})
         if chemin == "/modele/catalogue":
             return self._catalogue_des_modeles(donnee)
         if chemin == "/modele/essai":
@@ -1043,6 +1079,26 @@ class Poignee(BaseHTTPRequestHandler):
             "modele": None,
             "fournisseur": self.atelier.fournisseur(None) is not None})
 
+    def _ajouter_fournisseur(self, donnee: dict):
+        """Un fournisseur de plus dans la file d'essai."""
+        if not (self.compte and self.compte.administrateur):
+            return self._json(403, {"erreur": "Réservé aux administrateurs."})
+        service = (donnee.get("fournisseur") or "autre").strip()
+        connu = FOURNISSEURS.get(service)
+        url = (donnee.get("url") or (connu[1] if connu else "")).strip()
+        modele = (donnee.get("modele") or (connu[2] if connu else "")).strip()
+        try:
+            identifiant = self.atelier.reglages.ajouter_fournisseur(
+                service, url, modele, donnee.get("cle") or "",
+                Atelier.maintenant(), par=self.compte.nom)
+        except ReglageInvalide as erreur:
+            return self._json(400, {"erreur": str(erreur)})
+        self.atelier.signaler("modele.ajoute", f"{service} / {modele}",
+                              "Fournisseur ajouté à la file d'essai.",
+                              par=self.compte.nom)
+        return self._json(200, {"id": identifiant,
+                                "file": self.atelier.reglages.file_visible()})
+
     def _catalogue_des_modeles(self, donnee: dict):
         """Demander au fournisseur la liste de SES modèles.
 
@@ -1171,6 +1227,8 @@ class Poignee(BaseHTTPRequestHandler):
         fournisseur = self.atelier.fournisseur(None)
         if fournisseur is None:
             return self._json(400, {"erreur": "Aucun modèle configuré."})
+        journal = []
+        fournisseur = self.atelier.fournisseur(journal.append)
         try:
             reponse = fournisseur.completer_json(
                 "Réponds uniquement par un objet JSON.",
@@ -1180,7 +1238,16 @@ class Poignee(BaseHTTPRequestHandler):
             # n'importe quoi, et le message doit arriver à l'écran plutôt que
             # dans le journal du conteneur.
             return self._json(502, {"erreur": self._lisible(erreur)})
-        return self._json(200, {"repond": True, "recu": str(reponse)[:200]})
+        # Avec plusieurs clés, savoir LAQUELLE a répondu est le renseignement
+        # utile : c'est ce qui dit si l'on travaille sur son premier choix ou
+        # sur un recours.
+        resume = fournisseur.resume() if hasattr(fournisseur, "resume") else {}
+        return self._json(200, {
+            "repond": True, "recu": str(reponse)[:200],
+            "par": resume.get("fournisseur") or "",
+            "modele": resume.get("modele") or "",
+            "basculements": resume.get("basculements", 0),
+            "journal": journal})
 
     def _lisible(self, erreur: Exception) -> str:
         """Un message qui dit quoi faire, quand on peut le savoir.

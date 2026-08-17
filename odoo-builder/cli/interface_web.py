@@ -198,10 +198,19 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <label for="m-url">Adresse du service</label>
       <input id="m-url" autocomplete="off">
     </div>
+    <div id="bloc-file" hidden>
+      <label>File d'essai — le premier qui répond gagne</label>
+      <div id="file-modeles" class="projets"></div>
+      <p class="pied">Un seul fournisseur, c'est une panne unique : quota du
+        jour épuisé, service en maintenance, clé révoquée. Avec plusieurs,
+        l'Atelier bascule tout seul sur le suivant. L'ordre est le vôtre :
+        mettez devant celui que vous préférez.</p>
+    </div>
     <div id="modele-erreur" class="erreur" hidden></div>
     <div id="modele-bien" class="journal" hidden></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button type="submit" id="m-enregistrer">Enregistrer</button>
+      <button type="button" class="second" id="m-ajouter">Ajouter à la file</button>
       <button type="button" class="second" id="m-essai">Éprouver</button>
       <button type="button" class="second" id="m-oublier">Oublier la clé</button>
       <button type="button" class="second" id="m-fermer">Fermer</button>
@@ -1044,8 +1053,62 @@ let FOURNISSEURS = {};
    deux se confondent à l'œil, et « Éprouver » essaie le premier. */
 let EN_PLACE = null;
 
+function peindreFile(file) {
+  const boite = $('#file-modeles');
+  boite.textContent = '';
+  $('#bloc-file').hidden = !file || !file.length;
+  (file || []).forEach((f, index) => {
+    const ligne = document.createElement('div');
+    ligne.className = 'projet';
+    const nom = document.createElement('span');
+    nom.className = 'nom';
+    nom.textContent = `${index + 1}. ${f.service} — ${f.modele}`;
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = 'clé …' + f.fin_de_cle;
+    const haut = document.createElement('button');
+    haut.type = 'button'; haut.className = 'second'; haut.textContent = '↑';
+    haut.title = 'Essayer celui-ci plus tôt';
+    haut.addEventListener('click', () => deplacer(f.id, true));
+    const bas = document.createElement('button');
+    bas.type = 'button'; bas.className = 'second'; bas.textContent = '↓';
+    bas.addEventListener('click', () => deplacer(f.id, false));
+    const oter = document.createElement('button');
+    oter.className = 'oter'; oter.type = 'button'; oter.textContent = '×';
+    oter.addEventListener('click', async () => {
+      await fetch('/modele/oter', {method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: f.id})});
+      direModele('Fournisseur retiré de la file.', true);
+      etat();
+    });
+    ligne.append(nom, meta, haut, bas, oter);
+    boite.appendChild(ligne);
+  });
+}
+
+async function deplacer(id, haut) {
+  await fetch('/modele/deplacer', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: id, haut: haut})});
+  etat();
+}
+
+$('#m-ajouter').addEventListener('click', () =>
+  appelerModele('/modele/ajouter', {
+    fournisseur: $('#m-fournisseur').value,
+    modele: $('#m-modele').value,
+    url: $('#m-url').value,
+    cle: $('#m-cle').value,
+  }, $('#m-ajouter'), () => {
+    $('#m-cle').value = '';
+    return "Ajouté à la file. Éprouvez : c'est le premier qui répond qui "
+      + "travaillera.";
+  }));
+
 function peindreModele(s) {
   FOURNISSEURS = s.fournisseurs || {};
+  peindreFile(s.file);
   $('#etat').textContent = s.fournisseur
     ? 'modèle configuré' : 'aucun modèle — conversion seule';
   $('#concevoir').disabled = !s.fournisseur;
@@ -1146,8 +1209,9 @@ $('#formulaire-modele').addEventListener('submit', async evenement => {
      laisser l'utilisateur cliquer un second bouton pour l'apprendre, c'est le
      laisser croire que c'est fini. */
   if (enregistre) {
-    await appelerModele('/modele/essai', {}, $('#m-essai'),
-      () => 'Enregistré, et le fournisseur répond. « Concevoir » est utilisable.');
+    await appelerModele('/modele/essai', {}, $('#m-essai'), donnee =>
+      `Enregistré, et « ${donnee.par || 'le fournisseur'} » répond. `
+      + `« Concevoir » est utilisable.`);
   }
 });
 
@@ -1218,8 +1282,14 @@ $('#m-essai').addEventListener('click', () => {
       + "liriez porterait sur l'ancien.", false);
     return;
   }
-  appelerModele('/modele/essai', {}, $('#m-essai'),
-    () => 'Le fournisseur répond. Le bouton « Concevoir » est utilisable.');
+  appelerModele('/modele/essai', {}, $('#m-essai'), donnee =>
+    donnee.par
+      ? `Réponse obtenue de « ${donnee.par} »`
+        + (donnee.basculements
+            ? ` après ${donnee.basculements} basculement(s) — les précédents `
+              + `n'ont pas répondu.`
+            : ' — le premier de la file. « Concevoir » est utilisable.')
+      : 'Le fournisseur répond. « Concevoir » est utilisable.');
 });
 
 $('#m-oublier').addEventListener('click', () =>

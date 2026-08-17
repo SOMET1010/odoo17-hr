@@ -43,6 +43,22 @@ CREATE TABLE IF NOT EXISTS reglage (
     ecrit_le  TEXT NOT NULL,
     ecrit_par TEXT NOT NULL DEFAULT ''
 );
+
+-- PLUSIEURS FOURNISSEURS, ESSAYÉS DANS L'ORDRE. Un seul, c'est une panne
+-- unique : quota du jour épuisé, service en maintenance, clé révoquée par un
+-- collègue — et l'Atelier ne sait plus rédiger. Le rang décide de l'ordre
+-- d'essai ; on bascule au suivant quand l'un est INDISPONIBLE, jamais parce
+-- qu'une spécification est perfectible (ce cas-là appartient au validateur).
+CREATE TABLE IF NOT EXISTS fournisseur (
+    id          TEXT PRIMARY KEY,
+    rang        INTEGER NOT NULL DEFAULT 0,
+    service     TEXT NOT NULL,           -- « openrouter », « groq »…
+    url         TEXT NOT NULL,
+    modele      TEXT NOT NULL,
+    cle         TEXT NOT NULL,
+    ecrit_le    TEXT NOT NULL,
+    ecrit_par   TEXT NOT NULL DEFAULT ''
+);
 """
 
 # Les fournisseurs connus, pour éviter d'avoir à retenir une URL. « autre »
@@ -219,6 +235,73 @@ class Reglages:
             lien.execute(
                 "DELETE FROM reglage WHERE cle IN "
                 "('ia_fournisseur', 'ia_url', 'ia_modele', 'ia_cle')")
+
+    # ------------------------------------------------------ plusieurs clés
+
+    def ajouter_fournisseur(self, service: str, url: str, modele: str,
+                            cle: str, horodatage: str, par: str = "") -> str:
+        """Un fournisseur de plus dans la file. Rend son identifiant."""
+        if service not in FOURNISSEURS:
+            raise ReglageInvalide(f"Fournisseur inconnu « {service} ».")
+        url = verifier_url(url)
+        modele = (modele or "").strip()
+        if not modele:
+            raise ReglageInvalide("Le nom du modèle est vide.")
+        cle = (cle or "").strip()
+        if re.search(r"\s", cle):
+            raise ReglageInvalide("La clé contient une espace : recopiez-la sans.")
+        if len(cle) < 8:
+            raise ReglageInvalide("Cette clé est trop courte pour en être une.")
+        identifiant = f"{service}-{abs(hash((service, modele, cle))) % 10**8:08d}"
+        with self._lien() as lien:
+            rang = lien.execute(
+                "SELECT COALESCE(MAX(rang), -1) + 1 AS suivant FROM fournisseur"
+            ).fetchone()["suivant"]
+            lien.execute(
+                "INSERT INTO fournisseur (id, rang, service, url, modele, cle, "
+                "ecrit_le, ecrit_par) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET url = excluded.url, "
+                "modele = excluded.modele, cle = excluded.cle, "
+                "ecrit_le = excluded.ecrit_le",
+                (identifiant, rang, service, url, modele, cle, horodatage, par))
+        return identifiant
+
+    def fournisseurs(self) -> list[dict]:
+        """La file, dans l'ordre d'essai. LA CLÉ ENTIÈRE Y EST : réservé à la
+        construction du routeur, jamais à une route."""
+        with self._lien() as lien:
+            lignes = lien.execute(
+                "SELECT * FROM fournisseur ORDER BY rang, ecrit_le").fetchall()
+        return [dict(l) for l in lignes]
+
+    def file_visible(self) -> list[dict]:
+        """La même file, montrable : quatre derniers caractères de la clé."""
+        return [{"id": f["id"], "service": f["service"], "modele": f["modele"],
+                 "url": f["url"], "fin_de_cle": f["cle"][-4:], "rang": f["rang"]}
+                for f in self.fournisseurs()]
+
+    def oter_fournisseur(self, identifiant: str) -> bool:
+        with self._lien() as lien:
+            return lien.execute("DELETE FROM fournisseur WHERE id = ?",
+                                (identifiant,)).rowcount > 0
+
+    def deplacer_fournisseur(self, identifiant: str, vers_le_haut: bool) -> bool:
+        """L'ordre est une décision : le premier essayé est celui qu'on
+        préfère — le plus fiable, ou le moins cher, c'est à l'utilisateur."""
+        file = self.fournisseurs()
+        positions = [f["id"] for f in file]
+        if identifiant not in positions:
+            return False
+        i = positions.index(identifiant)
+        j = i - 1 if vers_le_haut else i + 1
+        if j < 0 or j >= len(positions):
+            return False
+        positions[i], positions[j] = positions[j], positions[i]
+        with self._lien() as lien:
+            for rang, cle_id in enumerate(positions):
+                lien.execute("UPDATE fournisseur SET rang = ? WHERE id = ?",
+                             (rang, cle_id))
+        return True
 
     # -------------------------------------------------------- inscriptions
 

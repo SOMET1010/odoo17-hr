@@ -4186,3 +4186,116 @@ class TestSuggestionDeModele(unittest.TestCase):
         finally:
             urllib.request.Request = ancien
         self.assertEqual(vu.get("max_tokens"), 8000)
+
+
+class TestPlusieursCles(unittest.TestCase):
+    """Plusieurs fournisseurs, essayés dans l'ordre.
+
+    Un seul, c'est une panne unique : quota du jour épuisé, service en
+    maintenance, clé révoquée par un collègue — et l'Atelier ne sait plus
+    rédiger. Ce que le routeur fait, et ce qu'il ne fait PAS, importe autant :
+    il bascule sur INDISPONIBILITÉ, jamais parce qu'une spécification est
+    perfectible. Confondre les deux brûlerait toute la file sur un texte
+    simplement à corriger.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def test_la_file_se_remplit_et_s_ordonne(self):
+        self._premier_compte()
+        for service, modele in (("groq", "llama-3.3-70b-versatile"),
+                                ("openrouter", "un/modele:free")):
+            code, donnee, _ = self._appel("/modele/ajouter", {
+                "fournisseur": service, "modele": modele,
+                "cle": "une-cle-de-recette-1234"})
+            self.assertEqual(code, 200, donnee)
+
+        _, sante, _ = self._appel("/sante")
+        self.assertEqual([f["service"] for f in sante["file"]],
+                         ["groq", "openrouter"])
+        # Aucune clé entière ne sort, même pour l'administrateur.
+        self.assertNotIn("une-cle-de-recette-1234", json.dumps(sante))
+        self.assertEqual(sante["file"][0]["fin_de_cle"], "1234")
+
+        identifiant = sante["file"][1]["id"]
+        self._appel("/modele/deplacer", {"id": identifiant, "haut": True})
+        _, sante, _ = self._appel("/sante")
+        self.assertEqual([f["service"] for f in sante["file"]],
+                         ["openrouter", "groq"])
+
+    def test_le_routeur_bascule_quand_le_premier_est_indisponible(self):
+        """La raison d'être de la file, éprouvée sur le vrai routeur."""
+        from ai.provider import ErreurFournisseur, ScriptedProvider
+        from ai.routeur import Etape, RouterProvider
+
+        class Muet(ScriptedProvider):
+            def completer_json(self, consigne, contexte):
+                raise ErreurFournisseur("429 quota du jour épuisé")
+
+        routeur = RouterProvider(
+            etapes=[Etape("premier", Muet([])),
+                    Etape("second", ScriptedProvider([{"pret": True}]))],
+            journal=lambda _: None)
+        self.assertEqual(routeur.completer_json("c", "x"), {"pret": True})
+        self.assertEqual(routeur.resume()["fournisseur"], "second")
+        self.assertEqual(routeur.resume()["basculements"], 1)
+
+    def test_l_essai_dit_lequel_a_repondu(self):
+        """Avec plusieurs clés, savoir laquelle travaille est LE renseignement
+        utile : il dit si l'on est sur son premier choix ou sur un recours."""
+        import atelier as module
+        self._premier_compte()
+        self._appel("/modele/ajouter", {"fournisseur": "groq",
+                                        "modele": "un-modele",
+                                        "cle": "une-cle-de-recette-1234"})
+        from ai.provider import ScriptedProvider
+        from ai.routeur import Etape, RouterProvider
+        atelier = module.Poignee.atelier
+        ancien = atelier.fournisseur
+        atelier.fournisseur = lambda journal=None: RouterProvider(
+            etapes=[Etape("groq (un-modele)", ScriptedProvider([{"pret": True}]))],
+            journal=journal or (lambda _: None))
+        try:
+            code, donnee, _ = self._appel("/modele/essai", {})
+        finally:
+            atelier.fournisseur = ancien
+        self.assertEqual(code, 200, donnee)
+        self.assertEqual(donnee["par"], "groq (un-modele)")
+        self.assertEqual(donnee["basculements"], 0)
+
+    def test_la_file_prime_sur_le_reglage_unique(self):
+        """Sinon on ajoute des clés et rien ne change, sans que rien ne le dise."""
+        import atelier as module
+        self._premier_compte()
+        self._appel("/modele", {"fournisseur": "openai",
+                                "cle": "cle-du-reglage-unique"})
+        self._appel("/modele/ajouter", {"fournisseur": "groq",
+                                        "modele": "un-modele",
+                                        "cle": "cle-de-la-file-9999"})
+        fournisseur = module.Poignee.atelier.fournisseur(None)
+        self.assertTrue(hasattr(fournisseur, "etapes"))
+        self.assertEqual(fournisseur.etapes[0].fournisseur.cle_api,
+                         "cle-de-la-file-9999")
+
+    def test_une_cle_trop_courte_n_entre_pas_dans_la_file(self):
+        self._premier_compte()
+        code, donnee, _ = self._appel("/modele/ajouter", {
+            "fournisseur": "groq", "modele": "un-modele", "cle": "court"})
+        self.assertEqual(code, 400)
+        self.assertIn("trop courte", donnee["erreur"])
+
+    def test_un_membre_ne_touche_pas_a_la_file(self):
+        self._premier_compte()
+        self._appel("/inscription/reglage", {"mode": "libre"})
+        self.jeton = ""
+        self._appel("/inscription", {"nom": "awa",
+                                     "motdepasse": "la-phrase-que-je-choisis"})
+        for route in ("/modele/ajouter", "/modele/oter", "/modele/deplacer"):
+            code, _, _ = self._appel(route, {"fournisseur": "groq",
+                                             "modele": "m", "cle": "x" * 12,
+                                             "id": "peu-importe"})
+            self.assertEqual(code, 403, route)
