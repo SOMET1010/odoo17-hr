@@ -4069,3 +4069,30 @@ class TestPorteDEntree(unittest.TestCase):
         self.assertIn("Créer un compte", PAGE)
         self.assertIn("lien-inscription", PAGE)
         self.assertIn("Code d'équipe", PAGE)
+
+
+class TestCatalogueDesModeles(unittest.TestCase):
+    """Demander la liste au fournisseur plutôt que de la deviner.
+
+    Une table de noms écrite dans le code vieillit, et vite : un modèle gratuit
+    disparaît en quelques mois, le service répond « 404 modèle inconnu », et
+    l'utilisateur n'a aucun moyen de savoir par quoi le remplacer. C'est
+    exactement ce qui est arrivé avec « deepseek-chat-v3-0324:free ».
+    """
+
+    def test_l_adresse_du_catalogue_se_deduit_de_celle_des_completions(self):
+        """Une adresse qu'on ne saisit pas est une adresse qu'on ne se trompe
+        pas d'écrire."""
+        from persistance.reglages import adresse_du_catalogue
+        cas = {
+            "https://openrouter.ai/api/v1/chat/completions":
+                "https://openrouter.ai/api/v1/models",
+            "https://api.groq.com/openai/v1/chat/completions":
+                "https://api.groq.com/openai/v1/models",
+            "http://127.0.0.1:11434/v1/chat/completions":
+                "http://127.0.0.1:11434/v1/models",
+            # Adresse inhabituelle : on ajoute plutôt que d'échouer.
+            "https://exemple.fr/v2": "https://exemple.fr/v2/models",
+        }
+        for donnee, attendu in cas.items():
+            self.assertEqual(adresse_du_catalogue(donnee), attendu)

@@ -61,6 +61,7 @@ import os
 import sys
 import shutil
 import tempfile
+import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -81,6 +82,7 @@ from persistance.depot import Depot, ProjetInaccessible  # noqa: E402
 from persistance.notifications import Evenement, Notifications  # noqa: E402
 from persistance.reglages import (  # noqa: E402
     FOURNISSEURS, INSCRIPTIONS, Reglages, ReglageInvalide,
+    adresse_du_catalogue,
 )
 from converter.extraction import ConversionImpossible, convertir  # noqa: E402
 from generator.dialecte import CIBLES  # noqa: E402
@@ -636,6 +638,8 @@ class Poignee(BaseHTTPRequestHandler):
             return self._poser_modele(donnee)
         if chemin == "/modele/oublier":
             return self._oublier_modele()
+        if chemin == "/modele/catalogue":
+            return self._catalogue_des_modeles(donnee)
         if chemin == "/modele/essai":
             return self._essayer_modele()
         if chemin == "/motdepasse":
@@ -1038,6 +1042,50 @@ class Poignee(BaseHTTPRequestHandler):
         return self._json(200, {
             "modele": None,
             "fournisseur": self.atelier.fournisseur(None) is not None})
+
+    def _catalogue_des_modeles(self, donnee: dict):
+        """Demander au fournisseur la liste de SES modèles.
+
+        POURQUOI CETTE ROUTE EXISTE. Une table de noms écrite dans le code
+        vieillit — et elle vieillit vite : un modèle gratuit disparaît du
+        catalogue en quelques mois, le fournisseur répond « 404 modèle
+        inconnu », et l'utilisateur n'a aucun moyen de savoir par quoi le
+        remplacer. Deviner un nom de mémoire ne fait que déplacer le problème
+        de quelques semaines. Le fournisseur, lui, sait.
+        """
+        if not (self.compte and self.compte.administrateur):
+            return self._json(403, {"erreur": "Réservé aux administrateurs."})
+        etat = self.atelier.reglages.etat()
+        url = (donnee.get("url") or (etat.url if etat else "")).strip()
+        # La clé n'est PAS demandée au navigateur : celle du serveur suffit,
+        # et la redemander la ferait voyager pour rien.
+        cle = self.atelier.reglages.cle()
+        if not cle and etat is None:
+            cle = os.environ.get("BUILDER_IA_CLE") or os.environ.get(
+                "OPENAI_API_KEY", "")
+        if not url:
+            return self._json(400, {"erreur": "Aucune adresse de fournisseur."})
+
+        requete = urllib.request.Request(adresse_du_catalogue(url))
+        if cle:
+            requete.add_header("Authorization", f"Bearer {cle}")
+        try:
+            with urllib.request.urlopen(requete, timeout=15) as reponse:
+                brut = json.loads(reponse.read().decode("utf-8"))
+        except Exception as erreur:                           # noqa: BLE001
+            return self._json(502, {"erreur": self._lisible(erreur)})
+
+        modeles = []
+        for entree in (brut.get("data") or brut.get("models") or []):
+            nom = entree.get("id") if isinstance(entree, dict) else str(entree)
+            if nom:
+                modeles.append(nom)
+        # Les gratuits d'abord : c'est ce qu'on cherche quand on vient ici.
+        gratuits = sorted(n for n in modeles if n.endswith(":free"))
+        autres = sorted(n for n in modeles if not n.endswith(":free"))
+        return self._json(200, {"modeles": gratuits + autres,
+                                "gratuits": len(gratuits),
+                                "total": len(modeles)})
 
     def _essayer_modele(self):
         """Appeler VRAIMENT le fournisseur, et rapporter ce qu'il répond.

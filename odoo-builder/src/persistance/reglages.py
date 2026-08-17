@@ -122,6 +122,21 @@ def verifier_url(url: str) -> str:
     return url
 
 
+def adresse_du_catalogue(url_de_completion: str) -> str:
+    """De « …/v1/chat/completions » à « …/v1/models ».
+
+    Tous les services parlant le protocole d'OpenAI exposent la liste de leurs
+    modèles à cet endroit. La déduire de l'adresse déjà configurée évite d'en
+    demander une seconde à l'utilisateur — et une adresse qu'on ne saisit pas
+    est une adresse qu'on ne se trompe pas d'écrire.
+    """
+    url = (url_de_completion or "").strip().rstrip("/")
+    for suffixe in ("/chat/completions", "/completions", "/messages"):
+        if url.endswith(suffixe):
+            return url[: -len(suffixe)] + "/models"
+    return url + "/models"
+
+
 def _chez_soi(hote: str) -> bool:
     """Vrai si l'hôte ne sort pas de la machine ou du réseau privé."""
     if hote in ("localhost", "host.docker.internal"):

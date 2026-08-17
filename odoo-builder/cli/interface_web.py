@@ -176,9 +176,13 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
     </div>
     <div>
       <label for="m-modele">Nom du modèle</label>
-      <input id="m-modele" autocomplete="off">
-      <p class="pied">Ces noms changent souvent. Si le fournisseur répond
-        « modèle inconnu », corrigez ici — c'est un mot, pas une réinstallation.</p>
+      <input id="m-modele" autocomplete="off" list="catalogue">
+      <datalist id="catalogue"></datalist>
+      <p class="pied">Ces noms changent souvent, et un modèle gratuit
+        disparaît en quelques mois. Plutôt que de deviner, demandez la liste
+        au fournisseur :</p>
+      <button type="button" class="second" id="m-catalogue">Lister ses modèles</button>
+      <p class="pied" id="mot-catalogue"></p>
     </div>
     <div>
       <label for="m-url">Adresse du service</label>
@@ -1139,6 +1143,35 @@ function nonEnregistre() {
       || EN_PLACE.url !== $('#m-url').value
       || EN_PLACE.fournisseur !== $('#m-fournisseur').value;
 }
+
+/* Demander la liste au fournisseur plutôt que de la deviner. Une table de
+   noms écrite dans le code vieillit vite : le service répond « 404 modèle
+   inconnu », et rien ne dit par quoi remplacer. Le fournisseur, lui, sait. */
+$('#m-catalogue').addEventListener('click', async evenement => {
+  const bouton = evenement.target, libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = '…';
+  try {
+    const reponse = await fetch('/modele/catalogue', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: $('#m-url').value}),
+    });
+    const donnee = await reponse.json();
+    if (!reponse.ok) { direModele(donnee.erreur || 'Échec.', false); return; }
+    const liste = $('#catalogue');
+    liste.textContent = '';
+    for (const nom of donnee.modeles) {
+      const option = document.createElement('option');
+      option.value = nom;
+      liste.appendChild(option);
+    }
+    $('#mot-catalogue').textContent = donnee.gratuits
+      ? `${donnee.total} modèles, dont ${donnee.gratuits} gratuits — ils sont `
+        + `en tête de la liste. Cliquez le champ ci-dessus pour la dérouler.`
+      : `${donnee.total} modèles. Cliquez le champ ci-dessus pour la dérouler.`;
+    if (donnee.modeles.length) $('#m-modele').value = donnee.modeles[0];
+    direModele('', true);
+  } finally { bouton.disabled = false; bouton.textContent = libelle; }
+});
 
 $('#m-essai').addEventListener('click', () => {
   if (nonEnregistre()) {
