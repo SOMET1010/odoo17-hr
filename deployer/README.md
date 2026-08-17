@@ -23,7 +23,15 @@ bash deployer/installer-atelier.sh --domaine atelier.exemple.fr \
 ```
 
 Sans `--domaine`, un nom dérivé de l'adresse IP est employé (sslip.io) et le
-certificat s'obtient dessus : rien à acheter. Le script affiche à la fin un
+certificat s'obtient dessus : rien à acheter.
+
+**Mais pas pour un usage à plusieurs.** `sslip.io` est un service de DNS
+générique très employé par l'hameçonnage : les filtrages d'entreprise le
+bloquent en bloc, Microsoft Defender compris, sans regarder ni le certificat ni
+le contenu. L'instance marche, et vos collègues lisent « ce contenu est bloqué
+par votre organisation ». Dès qu'on partage l'adresse, il faut un vrai nom :
+un enregistrement **A** vers l'adresse du serveur, puis une relance avec
+`--domaine`. sslip.io reste parfait pour éprouver seul, tout de suite. Le script affiche à la fin un
 **code d'installation** — il ne sert qu'à créer le premier compte, qui sera
 administrateur. Faites-le tout de suite : sur une adresse publique, le premier
 arrivé n'est pas forcément vous, et c'est précisément ce que ce code empêche.

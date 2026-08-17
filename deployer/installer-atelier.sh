@@ -117,6 +117,17 @@ if [[ -z "$DOMAINE" ]]; then
   DOMAINE="${adresse}.sslip.io"
   avert "aucun domaine fourni : « $DOMAINE » sera employé."
   info  "Un nom à vous se pose plus tard, en relançant avec --domaine."
+  info  ""
+  info  "ATTENTION, ET CE N'EST PAS THÉORIQUE : sslip.io est un service de DNS"
+  info  "générique très employé par les campagnes d'hameçonnage. Beaucoup de"
+  info  "filtrages d'entreprise le bloquent EN BLOC — Microsoft Defender le"
+  info  "fait — sans regarder ni le certificat ni le contenu. L'instance"
+  info  "fonctionne, et vos collègues voient « contenu bloqué par votre"
+  info  "organisation »."
+  info  ""
+  info  "Pour un usage à plusieurs, prévoyez un vrai nom : un enregistrement A"
+  info  "vers cette adresse, puis relancez avec --domaine. sslip.io reste"
+  info  "parfait pour éprouver seul, tout de suite, sans rien acheter."
 fi
 ok "site : https://$DOMAINE"
 
