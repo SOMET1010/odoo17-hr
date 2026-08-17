@@ -504,6 +504,21 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
         <button id="telecharger">Télécharger le module (.zip)</button>
         <button class="second" id="onglet">Ouvrir l'aperçu en pleine page</button>
       </div>
+      <!-- LES QUATRE ÉTAPES, À L'ÉCRAN AUSSI. L'archive porte la même notice,
+           mais on la lit rarement avant d'avoir échoué une fois. -->
+      <details id="pose">
+        <summary>Comment le poser dans Odoo — à lire avant</summary>
+        <ol style="font-size:.84rem;line-height:1.6;padding-left:18px;margin:8px 0 0">
+          <li><b>Extraire</b> l'archive dans votre dossier d'addons — le
+            dossier du module doit s'y trouver directement. Déposer le ZIP tel
+            quel ne suffit pas.</li>
+          <li><b>Redémarrer Odoo.</b></li>
+          <li><b>Mode développeur</b> : Paramètres → tout en bas.</li>
+          <li><b>Applications → Mettre à jour la liste.</b> Odoo ne le fait
+            jamais de lui-même.</li>
+          <li id="pose-cinq">Chercher le nom, puis <b>Installer</b>.</li>
+        </ol>
+      </details>
       <details>
         <summary>Voir la spécification</summary>
         <pre id="specification"></pre>

@@ -4707,3 +4707,78 @@ class TestThemeDecritEnFrancais(unittest.TestCase):
         charte.valider()
         fichiers = generer(charte, "17.0")
         self.assertTrue(any(n.endswith(".scss") for n in fichiers))
+
+
+class TestNoticeDInstallation(unittest.TestCase):
+    """« On dépose le ZIP dans addons et on ne voit pas l'application. »
+
+    Le module était parfaitement installable — la forge l'installe dans un
+    Odoo 17, 18 et 19 réels à chaque envoi. Ce qui manquait était la marche à
+    suivre : Odoo ne relit JAMAIS sa liste de modules de lui-même, et un thème
+    n'apparaît même pas dans « Applications », puisque cette liste filtre sur
+    les applications et qu'un thème n'en est pas une.
+
+    On livrait une archive sans une ligne d'explication. Personne ne pouvait
+    deviner.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        os.environ["ATELIER_DEPOT"] = os.path.join(self._dossier.name, "a.sqlite")
+        from atelier import Atelier
+        self.atelier = Atelier()
+
+    def _archive_de_module(self):
+        with open(os.path.join(RACINE, "specs", "mission.json"),
+                  encoding="utf-8") as fichier:
+            self.atelier.charger(json.load(fichier), "17.0")
+        return self.atelier.archive()
+
+    def _archive_de_theme(self):
+        self.atelier.theme({"nom": "Thème essai", "technique": "theme_essai",
+                            "primaire": "#1F4E79", "accent": "#E07B1F"}, "17.0")
+        return self.atelier.archive()
+
+    def test_l_archive_porte_la_marche_a_suivre(self):
+        with zipfile.ZipFile(io.BytesIO(self._archive_de_module())) as z:
+            self.assertIn("LISEZ-MOI.txt", z.namelist())
+            notice = z.read("LISEZ-MOI.txt").decode("utf-8")
+        # Les deux étapes qu'Odoo ne fait pas tout seul, et qu'on oublie.
+        self.assertIn("REDÉMARRER", notice)
+        self.assertIn("METTRE À JOUR LA LISTE", notice)
+        # Et le piège du ZIP non extrait.
+        self.assertIn("Déposer le fichier ZIP tel quel ne suffit pas", notice)
+
+    def test_la_notice_d_un_theme_previent_du_filtre(self):
+        """LA cause du « je ne le vois pas » sur un thème."""
+        with zipfile.ZipFile(io.BytesIO(self._archive_de_theme())) as z:
+            notice = z.read("LISEZ-MOI.txt").decode("utf-8")
+        self.assertIn("RETIRER LE FILTRE", notice)
+        self.assertIn("Un thème n'est pas une application", notice)
+
+    def test_la_notice_nomme_le_dossier_et_la_version(self):
+        """Une notice qui parle en général n'aide personne : elle doit citer
+        CE module et CETTE version."""
+        with zipfile.ZipFile(io.BytesIO(self._archive_de_module())) as z:
+            notice = z.read("LISEZ-MOI.txt").decode("utf-8")
+        self.assertIn("mission_management/__manifest__.py", notice)
+        self.assertIn("Odoo 17.0", notice)
+
+    def test_la_notice_ne_gene_pas_odoo(self):
+        """Elle est à la RACINE de l'archive, à côté du dossier du module :
+        Odoo n'explore que les dossiers d'un chemin d'addons."""
+        with zipfile.ZipFile(io.BytesIO(self._archive_de_module())) as z:
+            noms = z.namelist()
+        self.assertNotIn("mission_management/LISEZ-MOI.txt", noms)
+        self.assertTrue(all(n == "LISEZ-MOI.txt" or n.startswith("mission_management/")
+                            for n in noms), noms)
+
+    def test_le_module_reste_installable_tel_quel(self):
+        """La notice ne doit rien changer au module : mêmes fichiers, même
+        manifeste."""
+        with zipfile.ZipFile(io.BytesIO(self._archive_de_module())) as z:
+            manifeste = z.read("mission_management/__manifest__.py").decode("utf-8")
+        self.assertIn("'application': True", manifeste)
+        self.assertIn("'version': '17.0.1.0.0'", manifeste)

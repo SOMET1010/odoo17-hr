@@ -573,14 +573,85 @@ class Atelier:
     def archive(self) -> bytes:
         if self.courant == "theme":
             fichiers = generer_theme(self.charte, self.cible_courante)
-            return self._zipper(fichiers)
+            return self._zipper(fichiers, self.notice())
         fichiers = OdooModuleGenerator().generate(self.spec)
-        return self._zipper(fichiers)
+        return self._zipper(fichiers, self.notice())
+
+    def notice(self) -> str:
+        """La marche à suivre, dans l'archive elle-même.
+
+        POURQUOI ELLE MANQUAIT, ET CE QUE ÇA A COÛTÉ. On livrait une archive
+        sans une ligne d'explication. Déposée dans un dossier d'addons, elle
+        ne montre rien : Odoo ne relit pas la liste des modules de lui-même, et
+        un THÈME n'apparaît même pas dans « Applications » — cette liste filtre
+        sur les applications, et un thème n'en est pas une. Le module était
+        parfaitement installable ; personne ne pouvait le voir.
+        """
+        theme = self.courant == "theme"
+        technique = self.nom_livrable
+        nom = (self.charte.nom if theme else self.spec.name)
+        etapes = [
+            f"INSTALLER « {nom} » DANS ODOO {self.cible_courante}",
+            "",
+            "1. EXTRAIRE cette archive dans votre dossier d'addons.",
+            f"   Le dossier « {technique} » doit s'y trouver directement :",
+            f"       .../addons/{technique}/__manifest__.py",
+            "   Déposer le fichier ZIP tel quel ne suffit pas — Odoo ne lit",
+            "   pas dans les archives.",
+            "",
+            "2. REDÉMARRER Odoo. Un module apparu depuis le démarrage n'est",
+            "   pas vu tant que le service n'a pas relu son dossier d'addons.",
+            "",
+            "3. ACTIVER LE MODE DÉVELOPPEUR :",
+            "   Paramètres → tout en bas → Activer le mode développeur.",
+            "",
+            "4. METTRE À JOUR LA LISTE :",
+            "   Applications → Mettre à jour la liste des applications.",
+            "   Odoo ne le fait JAMAIS de lui-même.",
+            "",
+        ]
+        if theme:
+            etapes += [
+                f"5. CHERCHER « {nom} » — ET RETIRER LE FILTRE.",
+                "   Un thème n'est pas une application : la liste Applications",
+                "   le masque tant que le filtre « Applications » est actif.",
+                "   Cliquez la croix de ce filtre, puis cherchez le nom.",
+                "   C'est la raison la plus fréquente de « je ne le vois pas ».",
+                "",
+                "6. Installer. Les couleurs s'appliquent au rechargement de la",
+                "   page ; videz le cache du navigateur si l'ancien style",
+                "   persiste.",
+            ]
+        else:
+            etapes += [
+                f"5. CHERCHER « {nom} » dans Applications, puis Installer.",
+                "   Le menu apparaît dans la barre du haut une fois installé.",
+            ]
+        etapes += [
+            "",
+            "SI VOUS NE LE VOYEZ TOUJOURS PAS :",
+            "  — vérifiez que le dossier est bien sur le chemin d'addons",
+            "    (Paramètres → Technique → Paramètres système, ou la ligne",
+            "    « addons paths » au démarrage d'Odoo) ;",
+            "  — sous Docker, le dossier doit être DANS le volume monté, pas",
+            "    à côté ;",
+            "  — le propriétaire du dossier doit pouvoir être lu par Odoo.",
+            "",
+            f"Version visée : Odoo {self.cible_courante}. Installer un module",
+            "sur une autre version d'Odoo échoue au chargement : le numéro de",
+            "version du manifeste porte la série visée.",
+        ]
+        return "\n".join(etapes) + "\n"
 
     @staticmethod
-    def _zipper(fichiers: dict) -> bytes:
+    def _zipper(fichiers: dict, notice: str = "") -> bytes:
         tampon = io.BytesIO()
         with zipfile.ZipFile(tampon, "w", zipfile.ZIP_DEFLATED) as z:
+            if notice:
+                # À la RACINE de l'archive, à côté du dossier du module :
+                # Odoo n'explore que les dossiers, un fichier isolé ne le gêne
+                # pas — et c'est la première chose qu'on voit en ouvrant.
+                z.writestr("LISEZ-MOI.txt", notice)
             for chemin, contenu in sorted(fichiers.items()):
                 z.writestr(chemin, contenu)
         return tampon.getvalue()
