@@ -374,6 +374,28 @@ class Comptes:
             lien.execute("DELETE FROM session WHERE compte = ? AND jeton != ?",
                          (identifiant, garder_session))
 
+    def reinitialiser(self, nom: str, motdepasse: str) -> bool:
+        """Repose un mot de passe PROVISOIRE, coupe les sessions, réactive.
+
+        Réservé à la maintenance, depuis la machine elle-même : y avoir accès,
+        c'est déjà pouvoir lire et modifier ce fichier. Cette fonction ne donne
+        donc aucun pouvoir nouveau — elle évite d'écrire du SQL de mémoire un
+        jour de panique, moment où l'on se trompe et où l'on efface ce qu'on
+        voulait sauver.
+
+        Provisoire à dessein : ce mot de passe s'affiche sur une console et
+        traverse un canal quelconque. Il ne doit servir qu'à entrer une fois.
+        """
+        with self._lien() as lien:
+            curseur = lien.execute(
+                "UPDATE compte SET empreinte = ?, provisoire = 1, actif = 1 "
+                "WHERE nom = ?", (empreinte(motdepasse), nom))
+            if curseur.rowcount:
+                lien.execute(
+                    "DELETE FROM session WHERE compte IN "
+                    "(SELECT id FROM compte WHERE nom = ?)", (nom,))
+            return curseur.rowcount > 0
+
     # ------------------------------------------------------------- sessions
 
     def ouvrir_session(self, nom: str, motdepasse: str, horodatage: str,

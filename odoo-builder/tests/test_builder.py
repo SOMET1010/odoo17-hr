@@ -3882,3 +3882,76 @@ class TestInvitations(unittest.TestCase):
             "nom": "awa", "motdepasse": "la-phrase-que-je-choisis",
             "invitation": jeton})
         self.assertEqual(code, 403)
+
+
+class TestReprendreLaMain(unittest.TestCase):
+    """Quand le mot de passe administrateur est perdu.
+
+    Sans cet outil, une instance en ligne devient définitivement inaccessible
+    à son propriétaire — alors qu'il a la main sur la machine, donc sur le
+    fichier. Il fallait le lui donner proprement plutôt que de le laisser
+    écrire du SQL de mémoire un jour de panique.
+    """
+
+    def setUp(self):
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        sys.path[:0] = [os.path.join(RACINE, "src"), os.path.join(RACINE, "cli")]
+        os.environ["ATELIER_DEPOT"] = os.path.join(self._dossier.name, "a.sqlite")
+        from persistance.comptes import Comptes
+        from persistance.depot import Depot
+        self.comptes = Comptes(Depot().chemin)
+        self.comptes.creer("psomet", "le-mot-de-passe-oublie",
+                           "2026-08-17T10:00:00", "administrateur")
+
+    def test_le_compte_redevient_accessible_et_provisoire(self):
+        import reprendre_la_main
+        with contextlib.redirect_stdout(io.StringIO()) as sortie:
+            code = reprendre_la_main.principal(["psomet"])
+        self.assertEqual(code, 0)
+        nouveau = [l.strip() for l in sortie.getvalue().splitlines()
+                   if l.startswith("    ") and l.strip()][0]
+        # Le mot de passe rendu ouvre bien la session…
+        self.assertIsNotNone(self.comptes.ouvrir_session(
+            "psomet", nouveau, "2026-08-17T11:00:00", "2026-09-17T11:00:00"))
+        # …et il est provisoire : il a traversé une console, il ne vaut que
+        # pour entrer une fois.
+        self.assertTrue(self.comptes.compte("psomet").provisoire)
+
+    def test_un_compte_desactive_est_reactive(self):
+        """C'est le cas le plus probable où l'on se retrouve dehors."""
+        import reprendre_la_main
+        self.comptes.activer("psomet", False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            reprendre_la_main.principal(["psomet"])
+        self.assertTrue(self.comptes.compte("psomet").actif)
+
+    def test_les_sessions_ouvertes_ailleurs_sont_coupees(self):
+        """Si quelqu'un d'autre était entré avec l'ancien mot de passe, il est
+        dehors — c'est la moitié de l'intérêt de l'opération."""
+        import reprendre_la_main
+        _, jeton = self.comptes.ouvrir_session(
+            "psomet", "le-mot-de-passe-oublie", "2026-08-17T10:30:00",
+            "2026-09-17T10:30:00")
+        self.assertIsNotNone(self.comptes.session(jeton, "2026-08-17T10:31:00"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            reprendre_la_main.principal(["psomet"])
+        self.assertIsNone(self.comptes.session(jeton, "2026-08-17T10:32:00"))
+
+    def test_sans_argument_il_liste_sans_rien_changer(self):
+        """On ne remet pas un mot de passe par accident en cherchant un nom."""
+        import reprendre_la_main
+        with contextlib.redirect_stdout(io.StringIO()) as sortie:
+            code = reprendre_la_main.principal([])
+        self.assertEqual(code, 0)
+        self.assertIn("psomet", sortie.getvalue())
+        self.assertIsNotNone(self.comptes.ouvrir_session(
+            "psomet", "le-mot-de-passe-oublie", "2026-08-17T11:00:00",
+            "2026-09-17T11:00:00"))
+
+    def test_le_mot_de_passe_tire_est_assez_long_pour_etre_accepte(self):
+        """Un mot de passe de reprise que l'Atelier refuserait ensuite serait
+        une plaisanterie cruelle."""
+        import reprendre_la_main
+        for _ in range(20):
+            self.assertGreaterEqual(len(reprendre_la_main.phrase()), 12)
