@@ -101,33 +101,25 @@ class OpenAIProvider(AIProvider):
     def completer_json(self, consigne: str, contexte: str) -> dict:
         if not self.cle_api:
             raise ErreurFournisseur(
-                "OPENAI_API_KEY n'est pas définie : aucun fournisseur de modèle "
-                "disponible."
+                "Aucune clé : posez un modèle depuis l'interface, ou définissez "
+                "BUILDER_IA_CLE dans l'environnement du service."
             )
-        charge = json.dumps({
-            "model": self.modele,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": consigne},
-                {"role": "user", "content": contexte},
-            ],
-        }).encode("utf-8")
-
-        requete = urllib.request.Request(self.url, data=charge, method="POST")
-        requete.add_header("Content-Type", "application/json")
-        requete.add_header("Authorization", f"Bearer {self.cle_api}")
-
         try:
-            with urllib.request.urlopen(requete, timeout=self.delai) as reponse:
-                donnee = json.loads(reponse.read().decode("utf-8"))
-        except urllib.error.HTTPError as erreur:
-            corps = _corps_erreur(erreur)
-            raise ErreurFournisseur(
-                f"{erreur.code} {erreur.reason}" + (f" — {corps}" if corps else ""),
-                code=erreur.code, corps=corps,
-            )
-        except urllib.error.URLError as erreur:
-            raise ErreurFournisseur(f"point d'entrée injoignable : {erreur.reason}")
+            donnee = self._appeler(consigne, contexte, json_strict=True)
+        except ErreurFournisseur as erreur:
+            # « response_format » est une extension d'OpenAI. Beaucoup de
+            # services compatibles ne la connaissent pas — c'est le cas de
+            # plusieurs offres gratuites et de la plupart des modèles servis
+            # localement — et refusent la requête ENTIÈRE à cause d'elle. Le
+            # message parle alors d'un paramètre, jamais du modèle, et on
+            # cherche longtemps du mauvais côté.
+            #
+            # On ne renonce au JSON strict que sur ce refus-là, et une seule
+            # fois : l'extraction sait déjà tirer l'objet d'une réponse
+            # bavarde, mais elle est moins sûre — autant la garder en second.
+            if not _refus_de_response_format(erreur):
+                raise
+            donnee = self._appeler(consigne, contexte, json_strict=False)
 
         try:
             choix = donnee["choices"][0]
@@ -150,6 +142,41 @@ class OpenAIProvider(AIProvider):
             raise ErreurFournisseur(
                 f"{erreur}{détail} — reçu : {_apercu(texte)}"
             )
+
+    def _appeler(self, consigne: str, contexte: str, json_strict: bool) -> dict:
+        """Un aller-retour HTTP. Séparé pour pouvoir le rejouer sans le JSON strict."""
+        corps_requete = {
+            "model": self.modele,
+            "messages": [
+                {"role": "system", "content": consigne},
+                {"role": "user", "content": contexte},
+            ],
+        }
+        if json_strict:
+            corps_requete["response_format"] = {"type": "json_object"}
+
+        requete = urllib.request.Request(
+            self.url, data=json.dumps(corps_requete).encode("utf-8"), method="POST")
+        requete.add_header("Content-Type", "application/json")
+        requete.add_header("Authorization", f"Bearer {self.cle_api}")
+        try:
+            with urllib.request.urlopen(requete, timeout=self.delai) as reponse:
+                return json.loads(reponse.read().decode("utf-8"))
+        except urllib.error.HTTPError as erreur:
+            corps = _corps_erreur(erreur)
+            raise ErreurFournisseur(
+                f"{erreur.code} {erreur.reason}" + (f" — {corps}" if corps else ""),
+                code=erreur.code, corps=corps,
+            )
+        except urllib.error.URLError as erreur:
+            raise ErreurFournisseur(f"point d'entrée injoignable : {erreur.reason}")
+
+
+def _refus_de_response_format(erreur: "ErreurFournisseur") -> bool:
+    """Vrai si le service a refusé la requête À CAUSE de « response_format »."""
+    if getattr(erreur, "code", None) not in (400, 404, 422):
+        return False
+    return "response_format" in f"{erreur} {getattr(erreur, 'corps', '')}"
 
 
 class AnthropicProvider(AIProvider):

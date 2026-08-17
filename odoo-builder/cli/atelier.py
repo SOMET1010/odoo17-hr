@@ -69,7 +69,7 @@ sys.path.insert(0, os.path.join(RACINE, "src"))
 
 import datetime  # noqa: E402
 
-from ai.provider import fournisseur_configure  # noqa: E402
+from ai.provider import OpenAIProvider, fournisseur_configure  # noqa: E402
 # Le paquet s'appelle « persistance » et non « atelier » : ce script porte
 # déjà ce nom, et le dossier d'un script passe en tête du chemin d'import.
 # « import atelier.depot » retombait donc sur le script lui-même — une panne
@@ -78,6 +78,9 @@ from persistance.comptes import (  # noqa: E402
     DUREE_SESSION_JOURS, CompteInvalide, Comptes,
 )
 from persistance.depot import Depot, ProjetInaccessible  # noqa: E402
+from persistance.reglages import (  # noqa: E402
+    FOURNISSEURS, Reglages, ReglageInvalide,
+)
 from converter.extraction import ConversionImpossible, convertir  # noqa: E402
 from generator.dialecte import CIBLES  # noqa: E402
 from generator.odoo_module_generator import OdooModuleGenerator  # noqa: E402
@@ -108,6 +111,7 @@ class Atelier:
         self.projet: str | None = None    # l'identifiant en cours
         self.depot = Depot()
         self.comptes = Comptes(self.depot.chemin)
+        self.reglages = Reglages(self.depot.chemin)
         # Le compte qui travaille. Vide en local sans comptes : les projets
         # appartiennent alors au « poste », ce qui est exactement ce qu'on
         # veut d'un outil personnel.
@@ -135,13 +139,31 @@ class Atelier:
 
     # ------------------------------------------------------------ conception
 
+    def fournisseur(self, journal=None):
+        """Le fournisseur à employer, et d'où il vient.
+
+        Ce qui a été posé DEPUIS L'INTERFACE l'emporte sur l'environnement.
+        L'ordre inverse serait déroutant : on change le réglage à l'écran, on
+        ne voit rien changer, et rien ne dit pourquoi. L'environnement reste
+        l'amorçage — celui de l'installeur — et le recours si l'on efface le
+        réglage.
+        """
+        etat = self.reglages.etat()
+        if etat is not None:
+            if journal:
+                journal(f"  modèle « {etat.modele} » ({etat.fournisseur}), "
+                        f"posé depuis l'interface")
+            return OpenAIProvider(cle_api=self.reglages.cle(),
+                                  modele=etat.modele, url=etat.url)
+        return fournisseur_configure(journal)
+
     def concevoir(self, besoin: str, cible: str) -> dict:
-        fournisseur = fournisseur_configure(self.noter)
+        fournisseur = self.fournisseur(self.noter)
         if fournisseur is None:
             raise RuntimeError(
-                "Aucun fournisseur de modèle configuré. Définir BUILDER_IA_CLE "
-                "ou OPENAI_API_KEY dans l'environnement de CETTE commande — "
-                "jamais dans le navigateur."
+                "Aucun fournisseur de modèle configuré. Ouvrez « Modèle » en "
+                "haut de la page pour en poser un — la clé reste sur le "
+                "serveur, elle ne redescend jamais dans le navigateur."
             )
         spec = SpecDrafter(fournisseur).draft(besoin, self.noter)
         spec.cible = cible
@@ -466,7 +488,11 @@ class Poignee(BaseHTTPRequestHandler):
                 # Ne dit PAS le code, seulement qu'il en faut un.
                 "code_requis": bool(self.server.ouvert
                                     and not self.atelier.comptes.combien()),
-                "fournisseur": fournisseur_configure(None) is not None,
+                "fournisseur": self.atelier.fournisseur(None) is not None,
+                "modele": (self.atelier.reglages.etat().en_dict()
+                           if self.atelier.reglages.etat() else None),
+                "fournisseurs": {c: {"nom": n, "url": u, "modele": m}
+                                 for c, (n, u, m) in FOURNISSEURS.items()},
                 "cibles": list(CIBLES),
                 "courant": self.atelier.courant,
                 "polices": {c: d for c, (_, d) in POLICES.items()},
@@ -519,6 +545,12 @@ class Poignee(BaseHTTPRequestHandler):
             return self._connecter(donnee)
         if chemin == "/inscription":
             return self._inscrire(donnee)
+        if chemin == "/modele":
+            return self._poser_modele(donnee)
+        if chemin == "/modele/oublier":
+            return self._oublier_modele()
+        if chemin == "/modele/essai":
+            return self._essayer_modele()
         if chemin == "/deconnexion":
             self.atelier.comptes.fermer_session(self._jeton())
             self.atelier.nouveau()
@@ -684,6 +716,89 @@ class Poignee(BaseHTTPRequestHandler):
             self.atelier.compte = compte.id
             self._poser_cookie(jeton)
         return self._json(200, {"compte": compte.en_dict(), "premier": premier})
+
+    # -------------------------------------------------------------- modèle
+
+    def _administrateur(self) -> bool:
+        return bool(self.compte and self.compte.administrateur)
+
+    def _poser_modele(self, donnee: dict):
+        """Poser la clé depuis la page. Elle monte, elle ne redescend jamais.
+
+        Réservé aux administrateurs : changer de fournisseur, c'est décider
+        où partent les besoins qu'on décrit.
+        """
+        if not self._administrateur():
+            return self._json(403, {
+                "erreur": "Seul un administrateur peut changer le modèle."})
+        fournisseur = (donnee.get("fournisseur") or "autre").strip()
+        connu = FOURNISSEURS.get(fournisseur)
+        # Le choix d'un fournisseur connu remplit l'adresse et le modèle, mais
+        # ne les impose pas : un service change d'URL ou de nom de modèle plus
+        # vite qu'on ne met à jour une liste.
+        url = (donnee.get("url") or (connu[1] if connu else "")).strip()
+        modele = (donnee.get("modele") or (connu[2] if connu else "")).strip()
+        try:
+            self.atelier.reglages.poser_modele(
+                fournisseur, url, modele, donnee.get("cle") or "",
+                Atelier.maintenant(), par=self.compte.nom)
+        except ReglageInvalide as erreur:
+            return self._json(400, {"erreur": str(erreur)})
+        etat = self.atelier.reglages.etat()
+        return self._json(200, {"modele": etat.en_dict() if etat else None})
+
+    def _oublier_modele(self):
+        if not self._administrateur():
+            return self._json(403, {
+                "erreur": "Seul un administrateur peut changer le modèle."})
+        self.atelier.reglages.oublier_modele()
+        # Effacer ne laisse pas l'Atelier muet s'il existe un réglage
+        # d'environnement : on retombe sur celui de l'installeur, et on le dit.
+        return self._json(200, {
+            "modele": None,
+            "fournisseur": self.atelier.fournisseur(None) is not None})
+
+    def _essayer_modele(self):
+        """Appeler VRAIMENT le fournisseur, et rapporter ce qu'il répond.
+
+        « Configuré » ne veut pas dire « répond ». Une clé révoquée, un nom de
+        modèle disparu, un pare-feu sortant : rien de tout cela ne se voit
+        d'un réglage, et tout se voit d'un appel. On en fait donc un, le plus
+        petit possible.
+        """
+        if not self._administrateur():
+            return self._json(403, {
+                "erreur": "Seul un administrateur peut éprouver le modèle."})
+        fournisseur = self.atelier.fournisseur(None)
+        if fournisseur is None:
+            return self._json(400, {"erreur": "Aucun modèle configuré."})
+        try:
+            reponse = fournisseur.completer_json(
+                "Réponds uniquement par un objet JSON.",
+                'Rends exactement {"pret": true}.')
+        except Exception as erreur:                       # noqa: BLE001
+            # Large à dessein : un fournisseur inconnu peut lever à peu près
+            # n'importe quoi, et le message doit arriver à l'écran plutôt que
+            # dans le journal du conteneur.
+            return self._json(502, {"erreur": self._lisible(erreur)})
+        return self._json(200, {"repond": True, "recu": str(reponse)[:200]})
+
+    @staticmethod
+    def _lisible(erreur: Exception) -> str:
+        """Un message d'erreur qui dit quoi faire, quand on peut le savoir."""
+        texte = str(erreur)
+        if "401" in texte or "invalid_api_key" in texte or "Unauthorized" in texte:
+            return ("Le fournisseur refuse la clé (401). Vérifiez qu'elle est "
+                    "entière et qu'elle n'est pas révoquée.")
+        if "404" in texte and "model" in texte.lower():
+            return ("Le fournisseur ne connaît pas ce nom de modèle (404). "
+                    "Corrigez le nom du modèle.")
+        if "429" in texte:
+            return "Le fournisseur limite les appels (429). Réessayez dans un moment."
+        if "Name or service not known" in texte or "getaddrinfo" in texte:
+            return ("L'adresse du fournisseur est introuvable : vérifiez l'URL, "
+                    "ou la sortie réseau du serveur.")
+        return texte[:400]
 
     @staticmethod
     def _motif_de_refus_a_l_amorcage(donnee: dict) -> str:

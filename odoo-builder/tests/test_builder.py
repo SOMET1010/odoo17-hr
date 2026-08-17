@@ -2491,17 +2491,20 @@ class TestAtelierLocal(unittest.TestCase):
         self.atelier = atelier.Atelier()
 
     def test_la_page_ne_contient_aucune_valeur_de_cle(self):
-        """La page nomme les variables d'environnement ; elle ne les lit pas.
+        """La page permet de POSER une clé ; elle n'en contient aucune.
 
-        Nommer « BUILDER_IA_CLE » aide l'utilisateur à démarrer. En livrer la
-        valeur mettrait une clé d'API dans le presse-papier de quiconque
-        ouvre le code source de la page.
+        La clé monte du navigateur vers le serveur quand l'utilisateur la
+        tape. Elle ne redescend jamais : livrer sa valeur dans la page la
+        mettrait dans le presse-papier de quiconque ouvre le code source.
         """
         from interface_web import PAGE
-        for temoin in ("sk-", "BUILDER_IA_CLE=", "OPENAI_API_KEY="):
+        for temoin in ("sk-", "BUILDER_IA_CLE=", "OPENAI_API_KEY=", "gsk_"):
             self.assertNotIn(temoin, PAGE, f"« {temoin} » ne doit pas figurer")
-        # Le NOM, lui, doit y être : sans lui, personne ne sait quoi définir.
-        self.assertIn("BUILDER_IA_CLE", PAGE)
+        # Et il doit exister un endroit où la poser : sans lui, il faut une
+        # session sur le serveur pour changer de fournisseur — ce que cet
+        # outil est justement censé éviter.
+        self.assertIn("/modele", PAGE)
+        self.assertIn("type=\"password\"", PAGE)
 
     def test_rien_n_est_retenu_qui_ne_valide_pas(self):
         """Montrer une spécification invalide reviendrait à la faire approuver."""
@@ -2546,7 +2549,8 @@ class TestAtelierLocal(unittest.TestCase):
         try:
             with self.assertRaises(RuntimeError) as boite:
                 self.atelier.concevoir("un besoin quelconque assez long", "17.0")
-            self.assertIn("BUILDER_IA_CLE", str(boite.exception))
+            # Le message doit désigner le geste à faire, ici et maintenant.
+            self.assertIn("Modèle", str(boite.exception))
             self.assertIn("jamais dans le navigateur", str(boite.exception))
         finally:
             for cle, valeur in garde.items():
@@ -3093,3 +3097,193 @@ class TestAtelierEnLigne(unittest.TestCase):
                                    "motdepasse": "une-autre-phrase-secrete"})
         _, liste, _ = self._appel("/projets")
         self.assertEqual(liste["projets"], [])
+
+
+class TestModeleDepuisLInterface(unittest.TestCase):
+    """Choisir son fournisseur depuis la page, sans session sur le serveur.
+
+    Ce que ces contrôles défendent, dans l'ordre :
+
+      la clé MONTE et ne redescend jamais — aucune route ne la rend, même à
+      l'administrateur qui vient de la poser ;
+
+      seul un administrateur en change — décider où partent les besoins qu'on
+      décrit n'est pas un réglage d'affichage ;
+
+      rien ne part en clair — une adresse « http:// » vers une machine
+      publique enverrait la clé lisible sur le réseau.
+    """
+
+    def setUp(self):
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        sys.path.insert(0, os.path.join(RACINE, "src"))
+        from persistance.reglages import Reglages
+        self.reglages = Reglages(os.path.join(self._dossier.name, "r.sqlite"))
+
+    def _poser(self, **rectifs):
+        arguments = dict(fournisseur="openai",
+                         url="https://api.openai.com/v1/chat/completions",
+                         modele="gpt-4o", cle="sk-une-cle-de-recette-1234",
+                         horodatage="2026-08-17T10:00:00")
+        arguments.update(rectifs)
+        return self.reglages.poser_modele(**arguments)
+
+    def test_l_etat_ne_rend_jamais_la_cle(self):
+        self._poser()
+        etat = self.reglages.etat()
+        montre = json.dumps(etat.en_dict())
+        self.assertNotIn("sk-une-cle-de-recette-1234", montre)
+        # Juste de quoi reconnaître laquelle est en place.
+        self.assertEqual(etat.fin_de_cle, "1234")
+        self.assertEqual(len(etat.fin_de_cle), 4)
+        # La clé entière reste accessible au SEUL appel du fournisseur.
+        self.assertEqual(self.reglages.cle(), "sk-une-cle-de-recette-1234")
+
+    def test_http_vers_une_machine_publique_est_refuse(self):
+        """La clé voyagerait en clair : ce n'est pas un avertissement, c'est un refus."""
+        from persistance.reglages import ReglageInvalide
+        with self.assertRaises(ReglageInvalide) as boite:
+            self._poser(url="http://api.exemple.fr/v1/chat/completions")
+        self.assertIn("clair", str(boite.exception))
+
+    def test_http_vers_la_machine_elle_meme_est_permis(self):
+        """Un modèle qui tourne ici : rien ne sort, donc rien ne fuit."""
+        for adresse in ("http://127.0.0.1:11434/v1/chat/completions",
+                        "http://localhost:11434/v1/chat/completions",
+                        "http://192.168.1.20:11434/v1/chat/completions"):
+            self._poser(fournisseur="local", url=adresse, modele="qwen2.5-coder")
+            self.assertEqual(self.reglages.etat().url, adresse)
+
+    def test_une_cle_collee_avec_un_retour_a_la_ligne_est_nettoyee(self):
+        """Un copier-coller emporte un saut de ligne : on le retire, on ne
+        renvoie pas l'utilisateur à sa propre maladresse."""
+        self._poser(cle="  sk-une-cle-de-recette-1234\n")
+        self.assertEqual(self.reglages.cle(), "sk-une-cle-de-recette-1234")
+
+    def test_une_cle_coupee_en_deux_est_refusee_clairement(self):
+        """Une espace AU MILIEU est une clé tronquée, pas une maladresse de
+        collage : elle produirait un 401 que personne ne sait interpréter."""
+        from persistance.reglages import ReglageInvalide
+        with self.assertRaises(ReglageInvalide) as boite:
+            self._poser(cle="sk-une-cle de-recette")
+        self.assertIn("espace", str(boite.exception))
+
+    def test_oublier_rend_la_main_a_l_environnement(self):
+        self._poser()
+        self.assertIsNotNone(self.reglages.etat())
+        self.reglages.oublier_modele()
+        self.assertIsNone(self.reglages.etat())
+        self.assertEqual(self.reglages.cle(), "")
+
+    def test_les_fournitures_proposees_sont_utilisables_telles_quelles(self):
+        """Une liste de départ qui ne passerait pas nos propres contrôles
+        ferait échouer le premier essai de l'utilisateur, sans qu'il ait rien
+        saisi de faux."""
+        from persistance.reglages import FOURNISSEURS, verifier_url
+        for cle, (nom, url, modele) in FOURNISSEURS.items():
+            if cle == "autre":
+                continue                      # tout est à saisir, par définition
+            self.assertTrue(nom, cle)
+            self.assertTrue(modele, f"{cle} : un nom de modèle de départ manque")
+            verifier_url(url)                 # lève si l'adresse est refusable
+
+
+class TestRouteDuModele(unittest.TestCase):
+    """La même chose, mais par le serveur : c'est là que vivent les droits."""
+
+    CODE = "code-de-recette"
+
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        sys.path.insert(0, os.path.join(RACINE, "cli"))
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        os.environ["ATELIER_DEPOT"] = os.path.join(self._dossier.name, "a.sqlite")
+        os.environ["ATELIER_INSCRIPTION"] = "code-de-recette"
+
+        import atelier
+        ancien = atelier.Poignee.atelier
+        atelier.Poignee.atelier = atelier.Atelier()
+        self.addCleanup(setattr, atelier.Poignee, "atelier", ancien)
+        fini = threading.Event()
+
+        class Suivi(atelier.Poignee):
+            def finish(self):
+                try:
+                    super().finish()
+                finally:
+                    fini.set()
+
+        self.fini = fini
+        self.serveur = ThreadingHTTPServer(("127.0.0.1", 0), Suivi)
+        self.serveur.ouvert = True
+        self.adresse = f"http://127.0.0.1:{self.serveur.server_address[1]}"
+        fil = threading.Thread(target=self.serveur.serve_forever, daemon=True)
+        fil.start()
+        self.addCleanup(self.serveur.server_close)
+        self.addCleanup(fil.join, 5)
+        self.addCleanup(self.serveur.shutdown)
+        self.jeton = ""
+
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def test_un_membre_ne_change_pas_le_modele(self):
+        """Changer de fournisseur, c'est décider où partent les besoins décrits."""
+        self._premier_compte()
+        self._appel("/inscription", {"nom": "marie",
+                                     "motdepasse": "une-autre-phrase-secrete"})
+        self.jeton = ""
+        self._appel("/connexion", {"nom": "marie",
+                                   "motdepasse": "une-autre-phrase-secrete"})
+        code, donnee, _ = self._appel("/modele", {
+            "fournisseur": "openai", "cle": "sk-une-cle-de-recette-1234"})
+        self.assertEqual(code, 403)
+        self.assertIn("administrateur", donnee["erreur"])
+        # Et le refus n'a rien posé : la vérification porte sur l'effet, pas
+        # sur le code de réponse — un 403 peut très bien accompagner un écrit.
+        import atelier as module
+        self.assertIsNone(module.Poignee.atelier.reglages.etat())
+
+    def test_aucune_route_ne_rend_la_cle(self):
+        self._premier_compte()
+        self._appel("/modele", {"fournisseur": "openai",
+                                "cle": "sk-une-cle-de-recette-1234"})
+        for chemin in ("/sante", "/projets"):
+            _, donnee, _ = self._appel(chemin)
+            self.assertNotIn("sk-une-cle-de-recette-1234", json.dumps(donnee))
+        _, sante, _ = self._appel("/sante")
+        self.assertTrue(sante["fournisseur"])
+        self.assertEqual(sante["modele"]["fin_de_cle"], "1234")
+
+    def test_le_reglage_de_l_interface_l_emporte_sur_l_environnement(self):
+        """L'ordre inverse serait déroutant : on change, rien ne bouge, rien ne le dit."""
+        import atelier as module
+        garde = os.environ.get("BUILDER_IA_CLE")
+        os.environ["BUILDER_IA_CLE"] = "cle-de-l-environnement"
+        self.addCleanup(lambda: os.environ.__setitem__("BUILDER_IA_CLE", garde)
+                        if garde else os.environ.pop("BUILDER_IA_CLE", None))
+        self._premier_compte()
+        self._appel("/modele", {"fournisseur": "kimi",
+                                "cle": "sk-une-cle-de-recette-1234"})
+        fournisseur = module.Poignee.atelier.fournisseur(None)
+        self.assertEqual(fournisseur.cle_api, "sk-une-cle-de-recette-1234")
+        # Oublier rend la main à l'environnement, sans laisser l'Atelier muet.
+        code, donnee, _ = self._appel("/modele/oublier", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(donnee["fournisseur"])
+        self.assertEqual(module.Poignee.atelier.fournisseur(None).cle_api,
+                         "cle-de-l-environnement")
+
+    def test_eprouver_sans_modele_le_dit_au_lieu_d_appeler(self):
+        garde = {c: os.environ.pop(c, None)
+                 for c in ("BUILDER_IA_CLE", "OPENAI_API_KEY")}
+        self.addCleanup(lambda: [os.environ.__setitem__(c, v)
+                                 for c, v in garde.items() if v is not None])
+        self._premier_compte()
+        code, donnee, _ = self._appel("/modele/essai", {})
+        self.assertEqual(code, 400)
+        self.assertIn("Aucun modèle", donnee["erreur"])

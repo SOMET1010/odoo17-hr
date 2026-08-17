@@ -106,6 +106,7 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   <b>Atelier Odoo</b>
   <span style="margin-left:auto;display:flex;gap:14px;align-items:center">
     <span class="etat" id="etat">…</span>
+    <button class="lien-clair" id="ouvrir-modele" hidden>Modèle</button>
     <span class="etat" id="qui" hidden></span>
     <button class="lien-clair" id="deconnexion" hidden>Se déconnecter</button>
   </span>
@@ -131,6 +132,42 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
     </div>
     <div id="porte-erreur" class="erreur" hidden></div>
     <button type="submit" id="p-valider">Se connecter</button>
+  </form>
+</div>
+
+<div id="volet-modele" class="porte" hidden>
+  <form class="carte guichet" id="formulaire-modele" style="width:min(560px,100%)">
+    <h2>Quel modèle rédige les spécifications</h2>
+    <p class="pied" id="modele-actuel"></p>
+    <div>
+      <label for="m-fournisseur">Fournisseur</label>
+      <select id="m-fournisseur"></select>
+    </div>
+    <div>
+      <label for="m-modele">Nom du modèle</label>
+      <input id="m-modele" autocomplete="off">
+      <p class="pied">Ces noms changent souvent. Si le fournisseur répond
+        « modèle inconnu », corrigez ici — c'est un mot, pas une réinstallation.</p>
+    </div>
+    <div>
+      <label for="m-url">Adresse du service</label>
+      <input id="m-url" autocomplete="off">
+    </div>
+    <div>
+      <label for="m-cle">Clé</label>
+      <input id="m-cle" type="password" autocomplete="off"
+             placeholder="collez la clé — elle ne sera jamais réaffichée">
+      <p class="pied">Elle reste sur le serveur. Cette page ne peut pas la
+        relire : elle n'en revoit que les quatre derniers caractères.</p>
+    </div>
+    <div id="modele-erreur" class="erreur" hidden></div>
+    <div id="modele-bien" class="journal" hidden></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="submit" id="m-enregistrer">Enregistrer</button>
+      <button type="button" class="second" id="m-essai">Éprouver</button>
+      <button type="button" class="second" id="m-oublier">Oublier la clé</button>
+      <button type="button" class="second" id="m-fermer">Fermer</button>
+    </div>
   </form>
 </div>
 
@@ -485,6 +522,12 @@ async function etat() {
   $('#deconnexion').hidden = !s.compte;
   if (s.compte) $('#qui').textContent = s.compte.nom
     + (s.compte.role === 'administrateur' ? ' · admin' : '');
+  /* ICI, et pas seulement au démarrage. Peindre l'état du modèle une seule
+     fois au chargement laissait la bannière annoncer « aucun modèle » juste
+     après qu'on venait d'en poser un : l'écriture avait bien eu lieu, l'écran
+     racontait autre chose. Un état qui change doit se repeindre là où on le
+     relit. */
+  peindreModele(s);
   return s;
 }
 
@@ -534,13 +577,110 @@ function remplirChoix(s) {
     }
   }
   if ($('#t-densite').querySelector('[value=normale]')) $('#t-densite').value = 'normale';
+}
+
+/* --------------------------------------------------------------- modèle */
+
+let FOURNISSEURS = {};
+
+function peindreModele(s) {
+  FOURNISSEURS = s.fournisseurs || {};
   $('#etat').textContent = s.fournisseur
     ? 'modèle configuré' : 'aucun modèle — conversion seule';
-  if (!s.fournisseur) {
-    $('#concevoir').disabled = true;
-    $('#concevoir').title = "Définir BUILDER_IA_CLE ou OPENAI_API_KEY avant de démarrer l'Atelier";
+  $('#concevoir').disabled = !s.fournisseur;
+  $('#concevoir').title = s.fournisseur ? ''
+    : "Aucun modèle : ouvrez « Modèle » en haut de la page.";
+  /* Changer de modèle, c'est décider où partent les besoins qu'on décrit :
+     réservé aux administrateurs, et le bouton ne s'affiche pas autrement. */
+  const patron = !!(s.compte && s.compte.role === 'administrateur');
+  $('#ouvrir-modele').hidden = !patron;
+
+  const choix = $('#m-fournisseur');
+  if (!choix.options.length) {
+    for (const [cle, f] of Object.entries(FOURNISSEURS)) {
+      const o = document.createElement('option');
+      o.value = cle; o.textContent = f.nom;
+      choix.appendChild(o);
+    }
+  }
+  const m = s.modele;
+  $('#modele-actuel').textContent = m
+    ? `En place : ${m.modele} (${m.fournisseur}), clé …${m.fin_de_cle}.`
+    : (s.fournisseur
+        ? "En place : le modèle défini à l'installation du serveur. En poser un ici le remplacera."
+        : "Aucun modèle. La conversion d'un module et les thèmes fonctionnent sans.");
+  if (m) {
+    choix.value = m.fournisseur;
+    $('#m-modele').value = m.modele;
+    $('#m-url').value = m.url;
+  } else {
+    remplirDepuisFournisseur();
   }
 }
+
+function remplirDepuisFournisseur() {
+  const f = FOURNISSEURS[$('#m-fournisseur').value];
+  if (!f) return;
+  $('#m-modele').value = f.modele;
+  $('#m-url').value = f.url;
+}
+
+$('#m-fournisseur').addEventListener('change', remplirDepuisFournisseur);
+$('#ouvrir-modele').addEventListener('click', () => {
+  $('#volet-modele').hidden = false;
+  $('#modele-erreur').hidden = true; $('#modele-bien').hidden = true;
+});
+$('#m-fermer').addEventListener('click', () => { $('#volet-modele').hidden = true; });
+
+function direModele(texte, bon) {
+  const boite = $(bon ? '#modele-bien' : '#modele-erreur');
+  const autre = $(bon ? '#modele-erreur' : '#modele-bien');
+  autre.hidden = true;
+  boite.textContent = texte; boite.hidden = !texte;
+}
+
+async function appelerModele(route, corps, bouton, succes) {
+  const libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = '…';
+  try {
+    const reponse = await fetch(route, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(corps || {}),
+    });
+    if (reponse.status === 401) { location.reload(); return null; }
+    const donnee = await reponse.json();
+    if (!reponse.ok) { direModele(donnee.erreur || 'Échec.', false); return null; }
+    direModele(succes(donnee), true);
+    await etat();
+    return donnee;
+  } catch (e) {
+    direModele("L'appel a échoué : " + e.message, false);
+    return null;
+  } finally { bouton.disabled = false; bouton.textContent = libelle; }
+}
+
+$('#formulaire-modele').addEventListener('submit', async evenement => {
+  evenement.preventDefault();
+  await appelerModele('/modele', {
+    fournisseur: $('#m-fournisseur').value,
+    modele: $('#m-modele').value,
+    url: $('#m-url').value,
+    cle: $('#m-cle').value,
+  }, $('#m-enregistrer'), () => {
+    $('#m-cle').value = '';
+    return "Enregistré. Éprouvez-le : « configuré » ne veut pas dire « répond ».";
+  });
+});
+
+$('#m-essai').addEventListener('click', () =>
+  appelerModele('/modele/essai', {}, $('#m-essai'),
+    () => 'Le fournisseur répond. Le bouton « Concevoir » est utilisable.'));
+
+$('#m-oublier').addEventListener('click', () =>
+  appelerModele('/modele/oublier', {}, $('#m-oublier'), donnee =>
+    donnee.fournisseur
+      ? "Clé oubliée. L'Atelier retombe sur le modèle défini à l'installation."
+      : 'Clé oubliée. Plus aucun modèle : conversion et thèmes seulement.'));
 
 demarrer();
 </script>
