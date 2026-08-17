@@ -72,6 +72,57 @@ def _eprouver_sans_cycle(runtime, spec, modele) -> None:
     )
 
 
+def _eprouver_extension(runtime, spec) -> None:
+    """Prouver qu'une EXTENSION a pris effet. Trois questions, trois réponses.
+
+    Un module qui ne crée aucun modèle ne peut pas être éprouvé en créant un
+    enregistrement : il n'a pas de table à lui. Le banc s'arrêtait donc sur
+    « aucun modèle concret à éprouver » — un refus qui parlait du banc, pas du
+    module, alors que celui-ci s'était parfaitement installé.
+
+    Ce qu'on demande à Odoo, dans l'ordre où ça peut mentir :
+
+      1. le champ existe-t-il dans le REGISTRE ? « fields_get » lit ce que le
+         serveur a chargé en mémoire ;
+      2. la COLONNE existe-t-elle en base ? Un « search_count » avec un filtre
+         sur ce champ fabrique du SQL qui la nomme : si elle manque, ça casse.
+         Le registre, lui, ne s'en apercevrait pas ;
+      3. la GREFFE a-t-elle pris ? On demande la vue telle qu'un navigateur la
+         recevrait — héritages appliqués — et on y cherche nos champs. C'est
+         la seule question qui vaille : un module peut s'installer, poser ses
+         colonnes, et ne rien afficher du tout.
+    """
+    extensions = [m for m in spec.models if m.est_extension and m.fields]
+    for modele in extensions:
+        noms = [c.name for c in modele.fields]
+        connus = runtime.appeler(modele.name, "fields_get", [noms], {}) or {}
+        acceptation.controle(
+            all(n in connus for n in noms),
+            f"{modele.name} : {len(noms)} champ(s) ajouté(s) au registre "
+            f"({', '.join(noms)}).")
+        for nom in noms:
+            try:
+                runtime.appeler(modele.name, "search_count",
+                                [[(nom, "!=", False)]], {})
+                colonne = True
+            except ErreurRuntime:
+                colonne = False
+            acceptation.controle(
+                colonne, f"{modele.name}.{nom} : la colonne existe en base.")
+
+    for vue in spec.views:
+        if not vue.est_greffe:
+            continue
+        rendue = runtime.appeler(vue.model, "get_view", [],
+                                 {"view_type": vue.type}) or {}
+        arch = rendue.get("arch", "")
+        attendus = [n for i in vue.insertions for n in i.champs]
+        acceptation.controle(
+            all(f'name="{n}"' in arch for n in attendus),
+            f"Greffe sur « {vue.herite} » : {', '.join(attendus)} "
+            f"présent(s) dans la vue {vue.type} servie par Odoo.")
+
+
 def principal(argv=None) -> int:
     analyseur = argparse.ArgumentParser(prog="verifier-cible", description=__doc__)
     analyseur.add_argument(
@@ -146,7 +197,12 @@ def principal(argv=None) -> int:
         modele = next(
             (m for m in spec.models if not m.est_extension and m.fields), None
         )
-    if modele is None:
+    # Un module d'EXTENSION n'a aucun modèle à lui, et c'est normal : c'est
+    # même tout son objet. Le refuser ici revenait à déclarer en échec un
+    # module qu'Odoo venait d'installer sans broncher.
+    extension_seule = modele is None and any(
+        m.est_extension and m.fields for m in spec.models)
+    if modele is None and not extension_seule:
         acceptation.controle(False, "Aucun modèle concret à éprouver.")
         return 1
 
@@ -159,10 +215,16 @@ def principal(argv=None) -> int:
     )
     try:
         runtime.authentifier()
-        if epreuve_de_cycle:
+        if extension_seule:
+            _eprouver_extension(runtime, spec)
+        elif epreuve_de_cycle:
             acceptation._eprouver(runtime, spec, modele)
         else:
             _eprouver_sans_cycle(runtime, spec, modele)
+        # Une extension GREFFÉE peut aussi accompagner des modèles à soi :
+        # on éprouve alors les deux, plutôt que de choisir.
+        if not extension_seule and any(v.est_greffe for v in spec.views):
+            _eprouver_extension(runtime, spec)
     except ErreurRuntime as erreur:
         acceptation.controle(False, f"Exécution : {erreur}")
 
