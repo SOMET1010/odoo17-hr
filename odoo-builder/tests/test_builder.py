@@ -3831,7 +3831,10 @@ class TestInvitations(unittest.TestCase):
         code, donnee, _ = self._appel("/inscription", {
             "nom": "intrus", "motdepasse": "une-phrase-bien-longue"})
         self.assertEqual(code, 403)
-        self.assertIn("administrateur", donnee["erreur"])
+        self.assertIn("invitation", donnee["erreur"])
+        # Le refus se juge sur l'effet, pas sur le libellé.
+        import atelier as module
+        self.assertIsNone(module.Poignee.atelier.comptes.compte("intrus"))
 
     def test_un_membre_n_invite_pas(self):
         """Inviter, c'est décider qui entre : ce n'est pas un geste de membre."""
@@ -3955,3 +3958,114 @@ class TestReprendreLaMain(unittest.TestCase):
         import reprendre_la_main
         for _ in range(20):
             self.assertGreaterEqual(len(reprendre_la_main.phrase()), 12)
+
+
+class TestPorteDEntree(unittest.TestCase):
+    """Un visiteur légitime doit pouvoir entrer seul.
+
+    Le défaut était grossier et invisible depuis le code : l'instance
+    n'ouvrait de compte que si l'administrateur envoyait un lien, et l'écran ne
+    proposait RIEN. Les collègues arrivaient devant une porte sans sonnette, et
+    l'administrateur se retrouvait à devoir être présent pour chaque personne.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def test_par_defaut_la_porte_est_fermee(self):
+        """Une instance neuve n'ouvre rien d'elle-même : c'est à
+        l'administrateur de décider, jamais au réglage par défaut."""
+        self._premier_compte()
+        _, sante, _ = self._appel("/sante")
+        self.assertEqual(sante["inscription"], "fermee")
+
+    def test_le_code_d_equipe_ouvre_a_qui_le_connait(self):
+        self._premier_compte()
+        code, _, _ = self._appel("/inscription/reglage", {
+            "mode": "code", "code_equipe": "atelier-ansut-2026"})
+        self.assertEqual(code, 200)
+
+        self.jeton = ""
+        _, sante, _ = self._appel("/sante")
+        self.assertEqual(sante["inscription"], "code")
+        # Le code lui-même ne sort JAMAIS de /sante : la page dit qu'il en
+        # faut un, elle ne le connaît pas.
+        self.assertNotIn("atelier-ansut-2026", json.dumps(sante))
+
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "awa", "motdepasse": "la-phrase-que-je-choisis",
+            "code_equipe": "atelier-ansut-2026"})
+        self.assertEqual(code, 200, donnee)
+        self.assertFalse(donnee["compte"]["provisoire"])
+        self.assertEqual(donnee["compte"]["role"], "membre")
+
+    def test_un_mauvais_code_d_equipe_ne_passe_pas(self):
+        self._premier_compte()
+        self._appel("/inscription/reglage", {"mode": "code",
+                                             "code_equipe": "atelier-ansut-2026"})
+        self.jeton = ""
+        code, _, _ = self._appel("/inscription", {
+            "nom": "intrus", "motdepasse": "une-phrase-bien-longue",
+            "code_equipe": "au-hasard"})
+        self.assertEqual(code, 403)
+        import atelier as module
+        self.assertIsNone(module.Poignee.atelier.comptes.compte("intrus"))
+
+    def test_un_code_trop_court_est_refuse_a_la_pose(self):
+        """C'est le seul rempart entre une adresse publique et la création
+        d'un compte : court, il se devine."""
+        self._premier_compte()
+        code, donnee, _ = self._appel("/inscription/reglage", {
+            "mode": "code", "code_equipe": "1234"})
+        self.assertEqual(code, 400)
+        self.assertIn("8 caractères", donnee["erreur"])
+
+    def test_le_mode_libre_ouvre_vraiment(self):
+        self._premier_compte()
+        self._appel("/inscription/reglage", {"mode": "libre"})
+        self.jeton = ""
+        code, _, _ = self._appel("/inscription", {
+            "nom": "passant", "motdepasse": "une-phrase-bien-longue"})
+        self.assertEqual(code, 200)
+
+    def test_refermer_la_porte_la_referme_vraiment(self):
+        self._premier_compte()
+        self._appel("/inscription/reglage", {"mode": "code",
+                                             "code_equipe": "atelier-ansut-2026"})
+        self._appel("/inscription/reglage", {"mode": "fermee"})
+        self.jeton = ""
+        code, _, _ = self._appel("/inscription", {
+            "nom": "awa", "motdepasse": "la-phrase-que-je-choisis",
+            "code_equipe": "atelier-ansut-2026"})
+        self.assertEqual(code, 403)
+
+    def test_un_membre_ne_regle_pas_la_porte(self):
+        """Décider qui entre n'est pas un geste de membre."""
+        self._premier_compte()
+        self._appel("/inscription/reglage", {"mode": "libre"})
+        self.jeton = ""
+        self._appel("/inscription", {"nom": "awa",
+                                     "motdepasse": "la-phrase-que-je-choisis"})
+        code, _, _ = self._appel("/inscription/reglage", {"mode": "fermee"})
+        self.assertEqual(code, 403)
+        code, _, _ = self._appel("/inscription/reglage")
+        self.assertEqual(code, 403)
+
+    def test_l_administrateur_relit_le_code_pour_le_transmettre(self):
+        """Ce n'est pas un secret personnel : il doit pouvoir le redonner à
+        quelqu'un qui arrive."""
+        self._premier_compte()
+        self._appel("/inscription/reglage", {"mode": "code",
+                                             "code_equipe": "atelier-ansut-2026"})
+        _, donnee, _ = self._appel("/inscription/reglage")
+        self.assertEqual(donnee["code_equipe"], "atelier-ansut-2026")
+
+    def test_la_page_offre_un_bouton_pour_s_inscrire(self):
+        """Le défaut n'était pas dans le serveur : il était à l'écran."""
+        from interface_web import PAGE
+        self.assertIn("Créer un compte", PAGE)
+        self.assertIn("lien-inscription", PAGE)
+        self.assertIn("Code d'équipe", PAGE)

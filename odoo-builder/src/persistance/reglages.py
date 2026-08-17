@@ -133,6 +133,22 @@ def _chez_soi(hote: str) -> bool:
     return adresse.is_loopback or adresse.is_private
 
 
+# Comment on entre dans cette instance. Trois postures, et elles répondent à
+# trois situations réelles — pas à trois goûts.
+#
+#   « fermee » : rien à l'écran, on n'entre que par un lien d'invitation. Le
+#   plus sûr, mais l'administrateur est dans la boucle à chaque personne.
+#
+#   « code »   : un bouton « Créer un compte » demande un CODE D'ÉQUIPE, donné
+#   une fois à tout le monde. C'est le bon compromis pour une équipe : chacun
+#   s'inscrit seul, mais un passant qui trouve l'adresse ne peut rien.
+#
+#   « libre »  : n'importe qui peut se créer un compte. Sur une adresse
+#   publique, cela revient à confier un outil qui fabrique du code au premier
+#   venu — l'Atelier le dit, et ne l'active jamais de lui-même.
+INSCRIPTIONS = ("fermee", "code", "libre")
+
+
 class Reglages:
     """Les réglages durables, dans le même fichier que projets et comptes."""
 
@@ -188,6 +204,41 @@ class Reglages:
             lien.execute(
                 "DELETE FROM reglage WHERE cle IN "
                 "('ia_fournisseur', 'ia_url', 'ia_modele', 'ia_cle')")
+
+    # -------------------------------------------------------- inscriptions
+
+    def poser_inscription(self, mode: str, code: str, horodatage: str,
+                          par: str = "") -> None:
+        if mode not in INSCRIPTIONS:
+            raise ReglageInvalide(f"Mode d'inscription inconnu « {mode} ».")
+        code = (code or "").strip()
+        if mode == "code":
+            # Court, il se devine ; c'est le seul rempart entre l'adresse
+            # publique et la création d'un compte.
+            if len(code) < 8:
+                raise ReglageInvalide(
+                    "Le code d'équipe doit faire au moins 8 caractères.")
+            if re.search(r"\s", code):
+                raise ReglageInvalide("Le code d'équipe ne doit pas contenir "
+                                      "d'espace : il se recopie mal.")
+        with self._lien() as lien:
+            for nom, valeur in (("inscription_mode", mode),
+                                ("inscription_code", code)):
+                lien.execute(
+                    "INSERT INTO reglage (cle, valeur, ecrit_le, ecrit_par) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(cle) DO UPDATE SET "
+                    "valeur = excluded.valeur, ecrit_le = excluded.ecrit_le, "
+                    "ecrit_par = excluded.ecrit_par",
+                    (nom, valeur, horodatage, par))
+
+    def inscription(self) -> str:
+        """« fermee » par défaut : une instance neuve n'ouvre rien d'elle-même."""
+        return self._lire("inscription_mode") or "fermee"
+
+    def code_inscription(self) -> str:
+        """Le code d'équipe entier. Réservé à la vérification et à
+        l'administrateur qui doit le transmettre."""
+        return self._lire("inscription_code")
 
     def cle(self) -> str:
         """La clé entière. RÉSERVÉ à l'appel du fournisseur, jamais à une route."""

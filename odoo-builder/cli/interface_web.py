@@ -152,8 +152,17 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <p class="pied">Affiché sur la console du serveur au moment de
         l'installation. Il n'est demandé que pour ce premier compte.</p>
     </div>
+    <div id="bloc-equipe" hidden>
+      <label for="p-equipe">Code d'équipe</label>
+      <input id="p-equipe" autocomplete="off">
+      <p class="pied">Demandez-le à la personne qui administre cet Atelier.
+        Il est le même pour toute l'équipe.</p>
+    </div>
     <div id="porte-erreur" class="erreur" hidden></div>
     <button type="submit" id="p-valider">Se connecter</button>
+    <p class="pied" id="bascule-inscription" hidden>
+      <a href="#" id="lien-inscription">Créer un compte</a>
+    </p>
   </form>
 </div>
 
@@ -245,7 +254,25 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
     </div>
     <p class="pied">Au moins 12 caractères. Une phrase dont on se souvient vaut
       mieux qu'un mot compliqué.</p>
-    <h2 style="margin-top:6px">Inviter quelqu'un</h2>
+    <h2 style="margin-top:6px">Qui peut créer un compte</h2>
+    <div class="rangee">
+      <div>
+        <label for="s-mode">Porte d'entrée</label>
+        <select id="s-mode">
+          <option value="fermee">Fermée — sur invitation seulement</option>
+          <option value="code">Code d'équipe — chacun s'inscrit seul</option>
+          <option value="libre">Libre — n'importe qui (déconseillé en ligne)</option>
+        </select>
+      </div>
+      <div id="bloc-code-equipe">
+        <label for="s-code">Code d'équipe</label>
+        <input id="s-code" autocomplete="off">
+      </div>
+    </div>
+    <p class="pied" id="mot-inscription"></p>
+    <button type="button" class="second" id="s-enregistrer">Enregistrer la porte</button>
+
+    <h2 style="margin-top:6px">Ou inviter une personne</h2>
     <p class="pied">Un lien à usage unique, valable une semaine. La personne
       choisit elle-même son nom et son mot de passe — vous ne le connaîtrez
       jamais. C'est préférable à un mot de passe que vous tapez et transmettez.</p>
@@ -604,6 +631,8 @@ for (const [titre, texte] of EXEMPLES) {
 
 let PREMIER = false;
 let INVITATION = '';
+let INSCRIPTION = 'fermee';   /* ce que l'instance ouvre d'elle-même */
+let CREATION = false;         /* l'utilisateur a cliqué « Créer un compte » */
 
 async function etat() {
   const s = await (await fetch('/sante')).json();
@@ -622,21 +651,35 @@ async function etat() {
   $('#atelier').hidden = !ouvrir;
 
   if (!ouvrir) {
-    const creation = PREMIER || !!INVITATION;
+    const creation = PREMIER || !!INVITATION || CREATION;
     $('#titre-porte').textContent = PREMIER ? 'Premier compte'
-      : (INVITATION ? 'Créez votre compte' : 'Connexion');
+      : (creation ? 'Créez votre compte' : 'Connexion');
     $('#mot-porte').textContent = PREMIER
       ? "Aucun compte n'existe encore. Celui-ci sera administrateur — au moins 12 caractères."
       : (INVITATION
           ? "Vous avez été invité. Choisissez votre nom d'utilisateur et votre "
             + "mot de passe : personne d'autre ne le connaîtra, pas même celui "
             + "qui vous a invité. Au moins 12 caractères."
-          : 'Identifiez-vous pour retrouver vos projets.');
+          : (CREATION
+              ? "Choisissez votre nom d'utilisateur et votre mot de passe — au "
+                + "moins 12 caractères. Personne d'autre ne le connaîtra."
+              : 'Identifiez-vous pour retrouver vos projets.'));
     $('#p-valider').textContent = creation ? 'Créer le compte' : 'Se connecter';
     $('#p-mdp').autocomplete = creation ? 'new-password' : 'current-password';
     /* En ligne, le premier compte demande le code d'installation : sinon le
        premier visiteur venu deviendrait administrateur de l'instance. */
     $('#bloc-code').hidden = !s.code_requis;
+
+    /* SANS CE BOUTON, PERSONNE NE PEUT ENTRER SEUL. C'était le défaut : une
+       instance qui n'ouvrait de compte que si l'administrateur envoyait un
+       lien, et un écran qui ne proposait rien. Un visiteur légitime arrivait
+       devant une porte sans sonnette. */
+    INSCRIPTION = s.inscription || 'fermee';
+    const ouverte = INSCRIPTION !== 'fermee';
+    $('#bascule-inscription').hidden = PREMIER || !!INVITATION || !ouverte;
+    $('#lien-inscription').textContent = CREATION
+      ? 'J\'ai déjà un compte — me connecter' : 'Créer un compte';
+    $('#bloc-equipe').hidden = !(CREATION && INSCRIPTION === 'code' && !INVITATION);
     return s;
   }
 
@@ -674,15 +717,23 @@ async function etat() {
   return s;
 }
 
+$('#lien-inscription').addEventListener('click', evenement => {
+  evenement.preventDefault();
+  CREATION = !CREATION;
+  $('#porte-erreur').hidden = true;
+  etat();
+});
+
 $('#guichet').addEventListener('submit', async evenement => {
   evenement.preventDefault();
   const boite = $('#porte-erreur');
   boite.hidden = true;
-  const creation = PREMIER || !!INVITATION;
+  const creation = PREMIER || !!INVITATION || CREATION;
   const reponse = await fetch(creation ? '/inscription' : '/connexion', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({nom: $('#p-nom').value, motdepasse: $('#p-mdp').value,
-                          code: $('#p-code').value, invitation: INVITATION}),
+                          code: $('#p-code').value, invitation: INVITATION,
+                          code_equipe: $('#p-equipe').value}),
   });
   const donnee = await reponse.json();
   if (!reponse.ok) {
@@ -696,6 +747,7 @@ $('#guichet').addEventListener('submit', async evenement => {
     INVITATION = '';
     history.replaceState(null, '', location.pathname);
   }
+  CREATION = false;
   await demarrer();
 });
 
@@ -826,6 +878,49 @@ async function listerComptes() {
   }
 }
 
+async function lireInscription() {
+  const reponse = await fetch('/inscription/reglage');
+  if (!reponse.ok) return;
+  const donnee = await reponse.json();
+  $('#s-mode').value = donnee.mode;
+  $('#s-code').value = donnee.code_equipe || '';
+  peindreInscription();
+}
+
+function peindreInscription() {
+  const mode = $('#s-mode').value;
+  $('#bloc-code-equipe').hidden = mode !== 'code';
+  $('#mot-inscription').textContent = {
+    fermee: "Personne ne peut s'inscrire depuis la page : vous envoyez un lien "
+      + "à chaque personne. Le plus sûr, mais vous êtes dans la boucle.",
+    code: "Un bouton « Créer un compte » apparaît sur la page d'accueil et "
+      + "demande ce code. Donnez-le une fois à toute l'équipe : chacun "
+      + "s'inscrit seul, et un passant qui trouve l'adresse ne peut rien.",
+    libre: "N'importe qui trouvant l'adresse peut se créer un compte et se "
+      + "servir de l'outil. À ne retenir que sur un réseau fermé.",
+  }[mode] || '';
+}
+
+$('#s-mode').addEventListener('change', peindreInscription);
+
+$('#s-enregistrer').addEventListener('click', async evenement => {
+  const bouton = evenement.target, libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = '…';
+  try {
+    const reponse = await fetch('/inscription/reglage', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode: $('#s-mode').value,
+                            code_equipe: $('#s-code').value}),
+    });
+    const donnee = await reponse.json();
+    if (!reponse.ok) { direCompte(donnee.erreur || 'Échec.', false); return; }
+    direCompte(donnee.mode === 'code'
+      ? `Porte ouverte avec le code « ${donnee.code_equipe} ». Un bouton `
+        + `« Créer un compte » apparaît maintenant sur la page d'accueil.`
+      : `Porte réglée sur « ${donnee.mode} ».`, true);
+  } finally { bouton.disabled = false; bouton.textContent = libelle; }
+});
+
 async function listerInvitations() {
   const reponse = await fetch('/invitations');
   if (!reponse.ok) return;
@@ -899,7 +994,7 @@ $('#ouvrir-comptes').addEventListener('click', () => {
   $('#volet-comptes').hidden = false;
   direCompte('', true); direCompte('', false);
   $('#i-lien').hidden = true;
-  listerComptes(); listerInvitations();
+  listerComptes(); listerInvitations(); lireInscription();
 });
 $('#c-fermer').addEventListener('click', () => { $('#volet-comptes').hidden = true; });
 

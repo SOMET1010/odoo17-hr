@@ -80,7 +80,7 @@ from persistance.comptes import (  # noqa: E402
 from persistance.depot import Depot, ProjetInaccessible  # noqa: E402
 from persistance.notifications import Evenement, Notifications  # noqa: E402
 from persistance.reglages import (  # noqa: E402
-    FOURNISSEURS, Reglages, ReglageInvalide,
+    FOURNISSEURS, INSCRIPTIONS, Reglages, ReglageInvalide,
 )
 from converter.extraction import ConversionImpossible, convertir  # noqa: E402
 from generator.dialecte import CIBLES  # noqa: E402
@@ -507,6 +507,10 @@ class Poignee(BaseHTTPRequestHandler):
                 # Ne dit PAS le code, seulement qu'il en faut un.
                 "code_requis": bool(self.server.ouvert
                                     and not self.atelier.comptes.combien()),
+                # De quoi peindre un bouton « Créer un compte ». Le code
+                # d'équipe, lui, ne sort jamais d'ici : la page dit qu'il en
+                # faut un, elle ne le connaît pas.
+                "inscription": self.atelier.reglages.inscription(),
                 "fournisseur": self.atelier.fournisseur(None) is not None,
                 "modele": (self.atelier.reglages.etat().en_dict()
                            if self.atelier.reglages.etat() else None),
@@ -546,6 +550,16 @@ class Poignee(BaseHTTPRequestHandler):
             return self._json(200, {
                 "journal": self.atelier.notifications.journal(),
                 "voies": Notifications.voies_configurees()})
+        if chemin == "/inscription/reglage":
+            if not (self.compte and self.compte.administrateur):
+                return self._json(403, {"erreur": "Réservé aux administrateurs."})
+            # Le code d'équipe est rendu ICI, et seulement ici : un
+            # administrateur doit pouvoir le relire pour le transmettre à
+            # quelqu'un qui arrive. Ce n'est pas un secret personnel.
+            return self._json(200, {
+                "mode": self.atelier.reglages.inscription(),
+                "code_equipe": self.atelier.reglages.code_inscription(),
+                "modes": list(INSCRIPTIONS)})
         if chemin == "/invitations":
             if not (self.compte and self.compte.administrateur):
                 return self._json(403, {"erreur": "Réservé aux administrateurs."})
@@ -602,6 +616,8 @@ class Poignee(BaseHTTPRequestHandler):
             return self._connecter(donnee)
         if chemin == "/inscription":
             return self._inscrire(donnee)
+        if chemin == "/inscription/reglage":
+            return self._regler_inscription(donnee)
         if chemin == "/invitation":
             return self._creer_invitation(donnee)
         if chemin == "/invitation/revoquer":
@@ -799,8 +815,22 @@ class Poignee(BaseHTTPRequestHandler):
                               "déjà servi, ou elle a expiré. Demandez-en une "
                               "autre."})
         elif not premier and not (self.compte and self.compte.administrateur):
-            return self._json(403, {
-                "erreur": "Seul un administrateur peut créer un compte."})
+            # Pas d'invitation, pas d'administrateur : reste la porte que
+            # l'instance ouvre elle-même, si elle en ouvre une.
+            mode = self.atelier.reglages.inscription()
+            if mode == "libre":
+                pass
+            elif mode == "code":
+                attendu = self.atelier.reglages.code_inscription()
+                donne = (donnee.get("code_equipe") or "").strip()
+                if not attendu or not hmac.compare_digest(donne, attendu):
+                    return self._json(403, {
+                        "erreur": "Code d'équipe incorrect. Demandez-le à la "
+                                  "personne qui administre cet Atelier."})
+            else:
+                return self._json(403, {
+                    "erreur": "Cette instance n'ouvre pas d'inscription : "
+                              "demandez un lien d'invitation."})
         try:
             compte = self.atelier.comptes.creer(
                 (donnee.get("nom") or "").strip(),
@@ -808,13 +838,21 @@ class Poignee(BaseHTTPRequestHandler):
                 role=("administrateur" if premier
                       else (invitation["role"] if invitation
                             else (donnee.get("role") or "membre"))),
-                # Un mot de passe CHOISI par son propriétaire n'est pas
-                # provisoire : personne d'autre ne le connaît. Celui qu'un
-                # administrateur pose, si.
-                provisoire=not premier and invitation is None,
+                # PROVISOIRE VEUT DIRE : QUELQU'UN D'AUTRE L'A TAPÉ. C'est le
+                # seul cas — un administrateur qui pose le mot de passe d'un
+                # tiers. Par invitation, par code d'équipe ou par porte libre,
+                # la personne choisit le sien : le marquer provisoire lui
+                # imposerait de changer un secret que personne d'autre ne
+                # connaît, ce qui n'apprend rien à personne et agace.
+                provisoire=(not premier and invitation is None
+                            and self.compte is not None),
+                # PERSONNE N'EST CONNECTÉ sur la voie libre ou par code :
+                # lire « self.compte.nom » y tuait la requête, sans réponse et
+                # sans trace — le navigateur ne voyait qu'un échec de réseau.
                 cree_par=("" if premier
                           else (invitation["cree_par"] if invitation
-                                else self.compte.nom)))
+                                else (self.compte.nom if self.compte
+                                      else "porte ouverte"))))
         except CompteInvalide as erreur:
             return self._json(400, {"erreur": str(erreur)})
         if invitation is not None:
@@ -828,8 +866,9 @@ class Poignee(BaseHTTPRequestHandler):
             + (" par invitation." if invitation else "."),
             par=("installation" if premier
                  else (invitation["cree_par"] if invitation
-                       else self.compte.nom)))
-        if invitation is not None:
+                       else (self.compte.nom if self.compte
+                             else "porte ouverte"))))
+        if invitation is not None or (not premier and self.compte is None):
             # On ouvre la session tout de suite : la personne vient de choisir
             # son mot de passe, lui redemander de se connecter dans la foulée
             # n'apprend rien à personne.
@@ -856,6 +895,22 @@ class Poignee(BaseHTTPRequestHandler):
     def _bloque_par_mot_de_passe_provisoire(self, chemin: str) -> bool:
         return bool(self.compte and self.compte.provisoire
                     and chemin not in self.OUVERTES_EN_PROVISOIRE)
+
+    def _regler_inscription(self, donnee: dict):
+        """Qui peut créer un compte sur cette instance, et comment."""
+        if not (self.compte and self.compte.administrateur):
+            return self._json(403, {"erreur": "Réservé aux administrateurs."})
+        mode = (donnee.get("mode") or "fermee").strip()
+        code = (donnee.get("code_equipe") or "").strip()
+        try:
+            self.atelier.reglages.poser_inscription(
+                mode, code, Atelier.maintenant(), par=self.compte.nom)
+        except ReglageInvalide as erreur:
+            return self._json(400, {"erreur": str(erreur)})
+        self.atelier.signaler("inscription.reglee", mode,
+                              f"Inscription réglée sur « {mode} ».",
+                              par=self.compte.nom)
+        return self._json(200, {"mode": mode, "code_equipe": code})
 
     def _creer_invitation(self, donnee: dict):
         if not (self.compte and self.compte.administrateur):
