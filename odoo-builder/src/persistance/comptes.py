@@ -69,6 +69,21 @@ CREATE TABLE IF NOT EXISTS session (
 );
 
 CREATE INDEX IF NOT EXISTS session_compte ON session(compte);
+
+-- Une invitation permet à quelqu'un de créer SON compte, avec SON mot de
+-- passe. C'est ce qui distingue une instance close d'une instance fermée :
+-- personne n'entre sans y avoir été convié, et pourtant l'administrateur ne
+-- connaît le secret de personne.
+CREATE TABLE IF NOT EXISTS invitation (
+    jeton      TEXT PRIMARY KEY,
+    role       TEXT NOT NULL DEFAULT 'membre',
+    note       TEXT NOT NULL DEFAULT '',      -- « pour Awa », pour s'y retrouver
+    cree_par   TEXT NOT NULL DEFAULT '',
+    cree_le    TEXT NOT NULL,
+    expire_le  TEXT NOT NULL,
+    utilise_le TEXT NOT NULL DEFAULT '',
+    utilise_par TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -258,6 +273,79 @@ class Comptes:
         """
         with self._lien() as lien:
             curseur = lien.execute("DELETE FROM compte WHERE nom = ?", (nom,))
+            return curseur.rowcount > 0
+
+    # ---------------------------------------------------------- invitations
+
+    DUREE_INVITATION_JOURS = 7
+
+    def creer_invitation(self, role: str, note: str, horodatage: str,
+                         expire_le: str, par: str = "") -> str:
+        """Rend le jeton. À USAGE UNIQUE et daté.
+
+        Sans expiration, un lien oublié dans une conversation ouvre encore un
+        compte des mois plus tard. Sans usage unique, il en ouvre autant qu'on
+        veut — et un lien se transfère.
+        """
+        if role not in ("membre", "administrateur"):
+            raise CompteInvalide(f"rôle inconnu « {role} ».")
+        jeton = secrets.token_urlsafe(24)
+        with self._lien() as lien:
+            lien.execute(
+                "INSERT INTO invitation (jeton, role, note, cree_par, cree_le, "
+                "expire_le) VALUES (?, ?, ?, ?, ?, ?)",
+                (jeton, role, note.strip()[:80], par, horodatage, expire_le))
+        return jeton
+
+    def invitation(self, jeton: str, maintenant: str) -> dict | None:
+        """L'invitation si elle est utilisable, None sinon. Ne consomme rien."""
+        if not jeton:
+            return None
+        with self._lien() as lien:
+            ligne = lien.execute(
+                "SELECT * FROM invitation WHERE jeton = ?", (jeton,)).fetchone()
+        if ligne is None or ligne["utilise_le"] or ligne["expire_le"] <= maintenant:
+            return None
+        return dict(ligne)
+
+    def consommer_invitation(self, jeton: str, par: str, maintenant: str) -> bool:
+        """Marque l'invitation comme utilisée. Rend False si elle ne l'est plus.
+
+        La condition est DANS le UPDATE : deux personnes qui cliquent le même
+        lien en même temps ne peuvent pas créer deux comptes, parce que c'est
+        SQLite qui arbitre, pas une vérification faite juste avant.
+        """
+        with self._lien() as lien:
+            curseur = lien.execute(
+                "UPDATE invitation SET utilise_le = ?, utilise_par = ? "
+                "WHERE jeton = ? AND utilise_le = '' AND expire_le > ?",
+                (maintenant, par, jeton, maintenant))
+            return curseur.rowcount > 0
+
+    def lister_invitations(self, maintenant: str) -> list[dict]:
+        with self._lien() as lien:
+            lignes = lien.execute(
+                "SELECT role, note, cree_par, cree_le, expire_le, utilise_le, "
+                "utilise_par, jeton FROM invitation ORDER BY cree_le DESC "
+                "LIMIT 50").fetchall()
+        dehors = []
+        for ligne in lignes:
+            invitation = dict(ligne)
+            invitation["etat"] = (
+                "utilisée" if invitation["utilise_le"]
+                else ("périmée" if invitation["expire_le"] <= maintenant
+                      else "en attente"))
+            # Le jeton n'est rendu QUE tant qu'il sert : réafficher un lien
+            # consommé invite à le renvoyer, et il ne marchera pas.
+            if invitation["etat"] != "en attente":
+                invitation["jeton"] = ""
+            dehors.append(invitation)
+        return dehors
+
+    def revoquer_invitation(self, jeton: str) -> bool:
+        with self._lien() as lien:
+            curseur = lien.execute("DELETE FROM invitation WHERE jeton = ?",
+                                   (jeton,))
             return curseur.rowcount > 0
 
     def combien(self) -> int:

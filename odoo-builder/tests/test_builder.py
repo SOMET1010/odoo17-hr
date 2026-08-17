@@ -3726,3 +3726,159 @@ class TestNotifications(unittest.TestCase):
         self.assertEqual(trace["par"], "pierre")
         self.assertEqual(Notifications.voies_configurees(),
                          {"webhook": False, "courriel": False})
+
+
+class TestInvitations(unittest.TestCase):
+    """Convier quelqu'un sans jamais connaître son mot de passe.
+
+    La version précédente obligeait l'administrateur à taper le mot de passe de
+    chacun et à le transmettre. Ça ne tient pas à trois personnes, et ça le met
+    en position de pouvoir entrer partout. Une invitation renverse la charge :
+    elle autorise, elle ne révèle rien.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def _inviter(self, role="membre", note="Awa"):
+        code, donnee, _ = self._appel("/invitation", {"role": role, "note": note})
+        self.assertEqual(code, 200, donnee)
+        return donnee["jeton"]
+
+    def test_l_invite_choisit_son_mot_de_passe_et_entre(self):
+        self._premier_compte()
+        jeton = self._inviter()
+        self.jeton = ""                       # l'invité n'est pas connecté
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "awa", "motdepasse": "la-phrase-que-je-choisis",
+            "invitation": jeton})
+        self.assertEqual(code, 200, donnee)
+        self.assertEqual(donnee["compte"]["role"], "membre")
+        # Pas de mot de passe provisoire : elle l'a choisi, personne d'autre
+        # ne le connaît.
+        self.assertFalse(donnee["compte"]["provisoire"])
+        # Et elle est entrée : lui redemander de se connecter dans la foulée
+        # n'apprendrait rien à personne.
+        _, sante, _ = self._appel("/sante")
+        self.assertEqual(sante["compte"]["nom"], "awa")
+        code, _, _ = self._appel("/projets")
+        self.assertEqual(code, 200)
+
+    def test_une_invitation_ne_sert_qu_une_fois(self):
+        """Un lien se transfère. S'il valait plusieurs fois, en convier un
+        reviendrait à en convier autant qu'on veut."""
+        self._premier_compte()
+        jeton = self._inviter()
+        self.jeton = ""
+        self._appel("/inscription", {"nom": "awa",
+                                     "motdepasse": "la-phrase-que-je-choisis",
+                                     "invitation": jeton})
+        self.jeton = ""
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "intrus", "motdepasse": "une-autre-phrase-longue",
+            "invitation": jeton})
+        self.assertEqual(code, 403)
+        self.assertIn("plus valable", donnee["erreur"])
+        import atelier as module
+        self.assertIsNone(module.Poignee.atelier.comptes.compte("intrus"))
+
+    def test_une_invitation_perimee_n_ouvre_rien(self):
+        """Un lien oublié dans une conversation ouvrirait un compte des mois
+        plus tard."""
+        import atelier as module
+        self._premier_compte()
+        comptes = module.Poignee.atelier.comptes
+        jeton = comptes.creer_invitation(
+            "membre", "vieille", "2026-01-01T10:00:00",
+            expire_le="2026-01-08T10:00:00", par="pierre")
+        self.jeton = ""
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "tardif", "motdepasse": "une-phrase-bien-longue",
+            "invitation": jeton})
+        self.assertEqual(code, 403)
+        self.assertIn("expiré", donnee["erreur"])
+
+    def test_une_invitation_ratee_reste_utilisable(self):
+        """Si la création échoue — nom déjà pris, mot de passe trop court —
+        l'invitation ne doit pas être consommée : sinon un doigt qui glisse
+        oblige à en redemander une."""
+        self._premier_compte()
+        jeton = self._inviter()
+        self.jeton = ""
+        code, _, _ = self._appel("/inscription", {
+            "nom": "awa", "motdepasse": "court", "invitation": jeton})
+        self.assertEqual(code, 400)
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "awa", "motdepasse": "la-phrase-que-je-choisis",
+            "invitation": jeton})
+        self.assertEqual(code, 200, donnee)
+
+    def test_un_jeton_inventé_n_ouvre_rien(self):
+        self._premier_compte()
+        self.jeton = ""
+        code, _, _ = self._appel("/inscription", {
+            "nom": "intrus", "motdepasse": "une-phrase-bien-longue",
+            "invitation": "jeton-au-hasard"})
+        self.assertEqual(code, 403)
+
+    def test_sans_invitation_l_inscription_reste_fermee(self):
+        """C'est tout l'équilibre : ouverte à qui est convié, fermée aux autres."""
+        self._premier_compte()
+        self.jeton = ""
+        code, donnee, _ = self._appel("/inscription", {
+            "nom": "intrus", "motdepasse": "une-phrase-bien-longue"})
+        self.assertEqual(code, 403)
+        self.assertIn("administrateur", donnee["erreur"])
+
+    def test_un_membre_n_invite_pas(self):
+        """Inviter, c'est décider qui entre : ce n'est pas un geste de membre."""
+        self._premier_compte()
+        jeton = self._inviter()
+        self.jeton = ""
+        self._appel("/inscription", {"nom": "awa",
+                                     "motdepasse": "la-phrase-que-je-choisis",
+                                     "invitation": jeton})
+        code, _, _ = self._appel("/invitation", {"role": "administrateur"})
+        self.assertEqual(code, 403)
+        code, _, _ = self._appel("/invitations")
+        self.assertEqual(code, 403)
+
+    def test_le_role_vient_de_l_invitation_pas_de_l_invite(self):
+        """Sinon un invité se déclare administrateur en modifiant sa requête."""
+        self._premier_compte()
+        jeton = self._inviter(role="membre")
+        self.jeton = ""
+        _, donnee, _ = self._appel("/inscription", {
+            "nom": "awa", "motdepasse": "la-phrase-que-je-choisis",
+            "invitation": jeton, "role": "administrateur"})
+        self.assertEqual(donnee["compte"]["role"], "membre")
+
+    def test_une_invitation_consommee_ne_reaffiche_pas_son_lien(self):
+        """Réafficher un lien mort invite à le renvoyer."""
+        self._premier_compte()
+        jeton = self._inviter()
+        self.jeton = ""
+        self._appel("/inscription", {"nom": "awa",
+                                     "motdepasse": "la-phrase-que-je-choisis",
+                                     "invitation": jeton})
+        self._appel("/connexion", {"nom": "pierre",
+                                   "motdepasse": "une-phrase-dont-je-me-souviens"})
+        _, liste, _ = self._appel("/invitations")
+        utilisee = [i for i in liste["invitations"] if i["etat"] == "utilisée"]
+        self.assertEqual(len(utilisee), 1)
+        self.assertEqual(utilisee[0]["jeton"], "")
+        self.assertEqual(utilisee[0]["utilise_par"], "awa")
+
+    def test_revoquer_ferme_le_lien(self):
+        self._premier_compte()
+        jeton = self._inviter()
+        code, _, _ = self._appel("/invitation/revoquer", {"jeton": jeton})
+        self.assertEqual(code, 200)
+        self.jeton = ""
+        code, _, _ = self._appel("/inscription", {
+            "nom": "awa", "motdepasse": "la-phrase-que-je-choisis",
+            "invitation": jeton})
+        self.assertEqual(code, 403)

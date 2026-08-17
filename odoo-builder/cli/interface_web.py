@@ -243,6 +243,33 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
     </div>
     <p class="pied">Au moins 12 caractères. Une phrase dont on se souvient vaut
       mieux qu'un mot compliqué.</p>
+    <h2 style="margin-top:6px">Inviter quelqu'un</h2>
+    <p class="pied">Un lien à usage unique, valable une semaine. La personne
+      choisit elle-même son nom et son mot de passe — vous ne le connaîtrez
+      jamais. C'est préférable à un mot de passe que vous tapez et transmettez.</p>
+    <div class="rangee">
+      <div>
+        <label for="i-note">Pour qui (mémo)</label>
+        <input id="i-note" autocomplete="off" placeholder="Awa, dev backend">
+      </div>
+      <div style="max-width:170px">
+        <label for="i-role">Rôle</label>
+        <select id="i-role">
+          <option value="membre">Membre</option>
+          <option value="administrateur">Administrateur</option>
+        </select>
+      </div>
+    </div>
+    <button type="button" class="second" id="i-creer">Créer un lien d'invitation</button>
+    <div id="i-lien" hidden>
+      <label for="i-url">Lien à transmettre</label>
+      <input id="i-url" readonly onclick="this.select()">
+      <p class="pied">Copiez-le maintenant : il ne sera plus réaffiché.
+        Transmettez-le par le canal que vous voulez — il ne vaut qu'une fois.</p>
+    </div>
+    <div id="liste-invitations" class="projets"></div>
+
+    <h2 style="margin-top:6px">Ou poser un mot de passe vous-même</h2>
     <div id="compte-erreur" class="erreur" hidden></div>
     <div id="compte-bien" class="journal" hidden></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -574,6 +601,7 @@ for (const [titre, texte] of EXEMPLES) {
 }
 
 let PREMIER = false;
+let INVITATION = '';
 
 async function etat() {
   const s = await (await fetch('/sante')).json();
@@ -583,17 +611,27 @@ async function etat() {
      — aucun compte et écoute ouverte : il faut d'abord créer l'administrateur ;
      — des comptes existent : il faut se connecter. */
   PREMIER = !s.comptes_existants;
+  /* Un lien d'invitation ouvre un formulaire de CRÉATION, pas de connexion :
+     la personne choisit son nom et son mot de passe, et personne d'autre ne
+     les connaîtra. */
+  INVITATION = new URLSearchParams(location.search).get('invitation') || '';
   const ouvrir = s.connecte || (!s.comptes_existants && !s.ouvert);
   $('#porte').hidden = ouvrir;
   $('#atelier').hidden = !ouvrir;
 
   if (!ouvrir) {
-    $('#titre-porte').textContent = PREMIER ? 'Premier compte' : 'Connexion';
+    const creation = PREMIER || !!INVITATION;
+    $('#titre-porte').textContent = PREMIER ? 'Premier compte'
+      : (INVITATION ? 'Créez votre compte' : 'Connexion');
     $('#mot-porte').textContent = PREMIER
       ? "Aucun compte n'existe encore. Celui-ci sera administrateur — au moins 12 caractères."
-      : 'Identifiez-vous pour retrouver vos projets.';
-    $('#p-valider').textContent = PREMIER ? 'Créer le compte' : 'Se connecter';
-    $('#p-mdp').autocomplete = PREMIER ? 'new-password' : 'current-password';
+      : (INVITATION
+          ? "Vous avez été invité. Choisissez votre nom d'utilisateur et votre "
+            + "mot de passe : personne d'autre ne le connaîtra, pas même celui "
+            + "qui vous a invité. Au moins 12 caractères."
+          : 'Identifiez-vous pour retrouver vos projets.');
+    $('#p-valider').textContent = creation ? 'Créer le compte' : 'Se connecter';
+    $('#p-mdp').autocomplete = creation ? 'new-password' : 'current-password';
     /* En ligne, le premier compte demande le code d'installation : sinon le
        premier visiteur venu deviendrait administrateur de l'instance. */
     $('#bloc-code').hidden = !s.code_requis;
@@ -638,16 +676,24 @@ $('#guichet').addEventListener('submit', async evenement => {
   evenement.preventDefault();
   const boite = $('#porte-erreur');
   boite.hidden = true;
-  const reponse = await fetch(PREMIER ? '/inscription' : '/connexion', {
+  const creation = PREMIER || !!INVITATION;
+  const reponse = await fetch(creation ? '/inscription' : '/connexion', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({nom: $('#p-nom').value, motdepasse: $('#p-mdp').value,
-                          code: $('#p-code').value}),
+                          code: $('#p-code').value, invitation: INVITATION}),
   });
   const donnee = await reponse.json();
   if (!reponse.ok) {
     boite.textContent = donnee.erreur || 'Échec.'; boite.hidden = false; return;
   }
   $('#p-mdp').value = '';
+  /* L'invitation a servi : la retirer de l'adresse évite qu'un rechargement
+     rejoue une création qui échouerait, et qu'un lien mort traîne dans
+     l'historique du navigateur. */
+  if (INVITATION) {
+    INVITATION = '';
+    history.replaceState(null, '', location.pathname);
+  }
   await demarrer();
 });
 
@@ -778,6 +824,69 @@ async function listerComptes() {
   }
 }
 
+async function listerInvitations() {
+  const reponse = await fetch('/invitations');
+  if (!reponse.ok) return;
+  const donnee = await reponse.json();
+  const boite = $('#liste-invitations');
+  boite.textContent = '';
+  for (const i of donnee.invitations) {
+    if (i.etat !== 'en attente') continue;      /* le passé n'aide personne */
+    const ligne = document.createElement('div');
+    ligne.className = 'projet';
+    const nom = document.createElement('span');
+    nom.className = 'nom';
+    nom.textContent = i.note || 'invitation';
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = (i.role === 'administrateur' ? 'admin' : 'membre')
+      + ' · expire le ' + i.expire_le.slice(0, 10);
+    const copier = document.createElement('button');
+    copier.type = 'button'; copier.className = 'second'; copier.textContent = 'Copier';
+    copier.addEventListener('click', () => {
+      $('#i-url').value = lienInvitation(i.jeton);
+      $('#i-lien').hidden = false;
+      $('#i-url').select();
+    });
+    const oter = document.createElement('button');
+    oter.className = 'oter'; oter.type = 'button'; oter.textContent = '×';
+    oter.title = "Révoquer cette invitation";
+    oter.addEventListener('click', async () => {
+      await fetch('/invitation/revoquer', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({jeton: i.jeton}),
+      });
+      direCompte('Invitation révoquée.', true);
+      listerInvitations();
+    });
+    ligne.append(nom, meta, copier, oter);
+    boite.appendChild(ligne);
+  }
+}
+
+function lienInvitation(jeton) {
+  return location.origin + '/?invitation=' + encodeURIComponent(jeton);
+}
+
+$('#i-creer').addEventListener('click', async evenement => {
+  const bouton = evenement.target, libelle = bouton.textContent;
+  bouton.disabled = true; bouton.textContent = '…';
+  try {
+    const reponse = await fetch('/invitation', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({note: $('#i-note').value, role: $('#i-role').value}),
+    });
+    const donnee = await reponse.json();
+    if (!reponse.ok) { direCompte(donnee.erreur || 'Échec.', false); return; }
+    $('#i-url').value = lienInvitation(donnee.jeton);
+    $('#i-lien').hidden = false;
+    $('#i-url').select();
+    $('#i-note').value = '';
+    direCompte('', true);
+    listerInvitations();
+  } finally { bouton.disabled = false; bouton.textContent = libelle; }
+});
+
 function direCompte(texte, bon) {
   const boite = $(bon ? '#compte-bien' : '#compte-erreur');
   $(bon ? '#compte-erreur' : '#compte-bien').hidden = true;
@@ -787,7 +896,8 @@ function direCompte(texte, bon) {
 $('#ouvrir-comptes').addEventListener('click', () => {
   $('#volet-comptes').hidden = false;
   direCompte('', true); direCompte('', false);
-  listerComptes();
+  $('#i-lien').hidden = true;
+  listerComptes(); listerInvitations();
 });
 $('#c-fermer').addEventListener('click', () => { $('#volet-comptes').hidden = true; });
 

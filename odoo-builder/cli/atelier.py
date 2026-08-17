@@ -546,6 +546,13 @@ class Poignee(BaseHTTPRequestHandler):
             return self._json(200, {
                 "journal": self.atelier.notifications.journal(),
                 "voies": Notifications.voies_configurees()})
+        if chemin == "/invitations":
+            if not (self.compte and self.compte.administrateur):
+                return self._json(403, {"erreur": "Réservé aux administrateurs."})
+            return self._json(200, {
+                "invitations": self.atelier.comptes.lister_invitations(
+                    Atelier.maintenant()),
+                "jours": self.atelier.comptes.DUREE_INVITATION_JOURS})
         if chemin == "/comptes":
             if not (self.compte and self.compte.administrateur):
                 return self._json(403, {
@@ -595,6 +602,16 @@ class Poignee(BaseHTTPRequestHandler):
             return self._connecter(donnee)
         if chemin == "/inscription":
             return self._inscrire(donnee)
+        if chemin == "/invitation":
+            return self._creer_invitation(donnee)
+        if chemin == "/invitation/revoquer":
+            if not (self.compte and self.compte.administrateur):
+                return self._json(403, {"erreur": "Réservé aux administrateurs."})
+            trouvee = self.atelier.comptes.revoquer_invitation(
+                donnee.get("jeton") or "")
+            return self._json(200 if trouvee else 404,
+                              {"revoquee": trouvee} if trouvee
+                              else {"erreur": "Invitation introuvable."})
         if chemin == "/compte/activer":
             return self._activer_compte(donnee)
         if chemin == "/compte/supprimer":
@@ -764,7 +781,24 @@ class Poignee(BaseHTTPRequestHandler):
             motif = self._motif_de_refus_a_l_amorcage(donnee)
             if motif:
                 return self._json(403, {"erreur": motif})
-        if not premier and not (self.compte and self.compte.administrateur):
+
+        # UNE INVITATION VAUT AUTORISATION. C'est ce qui permet à quelqu'un de
+        # créer SON compte avec SON mot de passe : l'administrateur convie,
+        # il ne connaît pas le secret. Sans elle, il fallait taper le mot de
+        # passe de chacun et le lui transmettre — ce qui ne tient pas à trois
+        # personnes, et met l'administrateur en position de pouvoir entrer
+        # partout.
+        invitation = None
+        jeton_invitation = (donnee.get("invitation") or "").strip()
+        if not premier and jeton_invitation:
+            invitation = self.atelier.comptes.invitation(
+                jeton_invitation, Atelier.maintenant())
+            if invitation is None:
+                return self._json(403, {
+                    "erreur": "Cette invitation n'est plus valable : elle a "
+                              "déjà servi, ou elle a expiré. Demandez-en une "
+                              "autre."})
+        elif not premier and not (self.compte and self.compte.administrateur):
             return self._json(403, {
                 "erreur": "Seul un administrateur peut créer un compte."})
         try:
@@ -772,18 +806,39 @@ class Poignee(BaseHTTPRequestHandler):
                 (donnee.get("nom") or "").strip(),
                 donnee.get("motdepasse") or "", Atelier.maintenant(),
                 role=("administrateur" if premier
-                      else (donnee.get("role") or "membre")),
-                # Le mot de passe posé par un administrateur est PROVISOIRE :
-                # il le connaît. Le compte devra en choisir un à sa première
-                # connexion, et lui seul le connaîtra ensuite.
-                provisoire=not premier,
-                cree_par="" if premier else self.compte.nom)
+                      else (invitation["role"] if invitation
+                            else (donnee.get("role") or "membre"))),
+                # Un mot de passe CHOISI par son propriétaire n'est pas
+                # provisoire : personne d'autre ne le connaît. Celui qu'un
+                # administrateur pose, si.
+                provisoire=not premier and invitation is None,
+                cree_par=("" if premier
+                          else (invitation["cree_par"] if invitation
+                                else self.compte.nom)))
         except CompteInvalide as erreur:
             return self._json(400, {"erreur": str(erreur)})
+        if invitation is not None:
+            # Consommée APRÈS la création : si celle-ci échoue — nom déjà pris,
+            # mot de passe trop court — l'invitation doit rester utilisable.
+            self.atelier.comptes.consommer_invitation(
+                jeton_invitation, compte.nom, Atelier.maintenant())
         self.atelier.signaler(
             "compte.cree", compte.nom,
-            f"Accès {compte.role} créé.",
-            par="installation" if premier else self.compte.nom)
+            f"Accès {compte.role} créé"
+            + (" par invitation." if invitation else "."),
+            par=("installation" if premier
+                 else (invitation["cree_par"] if invitation
+                       else self.compte.nom)))
+        if invitation is not None:
+            # On ouvre la session tout de suite : la personne vient de choisir
+            # son mot de passe, lui redemander de se connecter dans la foulée
+            # n'apprend rien à personne.
+            ouverture = self.atelier.comptes.ouvrir_session(
+                compte.nom, donnee.get("motdepasse"), Atelier.maintenant(),
+                self._expiration())
+            if ouverture:
+                self.atelier.compte = compte.id
+                self._poser_cookie(ouverture[1])
         if premier:
             _, jeton = self.atelier.comptes.ouvrir_session(
                 compte.nom, donnee.get("motdepasse"), Atelier.maintenant(),
@@ -801,6 +856,24 @@ class Poignee(BaseHTTPRequestHandler):
     def _bloque_par_mot_de_passe_provisoire(self, chemin: str) -> bool:
         return bool(self.compte and self.compte.provisoire
                     and chemin not in self.OUVERTES_EN_PROVISOIRE)
+
+    def _creer_invitation(self, donnee: dict):
+        if not (self.compte and self.compte.administrateur):
+            return self._json(403, {"erreur": "Réservé aux administrateurs."})
+        expire = (datetime.datetime.now() + datetime.timedelta(
+            days=Comptes.DUREE_INVITATION_JOURS)).isoformat(timespec="seconds")
+        try:
+            jeton = self.atelier.comptes.creer_invitation(
+                donnee.get("role") or "membre", donnee.get("note") or "",
+                Atelier.maintenant(), expire, par=self.compte.nom)
+        except CompteInvalide as erreur:
+            return self._json(400, {"erreur": str(erreur)})
+        self.atelier.signaler("invitation.creee",
+                              donnee.get("note") or "sans nom",
+                              f"Invitation {donnee.get('role') or 'membre'} "
+                              f"valable {Comptes.DUREE_INVITATION_JOURS} jours.",
+                              par=self.compte.nom)
+        return self._json(200, {"jeton": jeton, "expire_le": expire})
 
     def _changer_motdepasse(self, donnee: dict):
         """Chacun change le sien. C'est la seule route ouverte à un compte
