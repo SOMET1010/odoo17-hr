@@ -610,7 +610,13 @@ class Poignee(BaseHTTPRequestHandler):
         except (RedactionImpossible, ConversionImpossible, SpecInvalide,
                 ThemeInvalide, ProjetInaccessible, RuntimeError,
                 FileNotFoundError) as erreur:
-            return self._json(400, {"erreur": str(erreur),
+            # La même traduction que pour « Éprouver ». Un refus du
+            # fournisseur arrivait ici tel quel — « 401 Unauthorized —
+            # Invalid Authentication » — ce qui est exact et n'apprend rien :
+            # ni que c'est la clé, ni qu'elle part peut-être au mauvais
+            # service. L'utilisateur voyait le message le moins utile
+            # précisément à l'endroit où il travaille.
+            return self._json(400, {"erreur": self._lisible(erreur),
                                     "journal": self.atelier.journal})
         resultat["journal"] = self.atelier.journal
         return self._json(200, resultat)
@@ -783,21 +789,35 @@ class Poignee(BaseHTTPRequestHandler):
             return self._json(502, {"erreur": self._lisible(erreur)})
         return self._json(200, {"repond": True, "recu": str(reponse)[:200]})
 
-    @staticmethod
-    def _lisible(erreur: Exception) -> str:
-        """Un message d'erreur qui dit quoi faire, quand on peut le savoir."""
+    def _lisible(self, erreur: Exception) -> str:
+        """Un message qui dit quoi faire, quand on peut le savoir.
+
+        Le message brut d'un fournisseur est exact et inutile : « 401
+        Unauthorized » ne dit ni que c'est la clé, ni — et c'est le cas le
+        plus fréquent — qu'une clé parfaitement valide part au mauvais
+        service. On nomme donc l'adresse réellement appelée : c'est elle qui
+        rend la faute évidente.
+        """
         texte = str(erreur)
+        etat = self.atelier.reglages.etat()
+        ou = f" Adresse appelée : {etat.url}" if etat else (
+            " L'adresse est celle posée à l'installation du serveur ; si la clé "
+            "n'est pas une clé OpenAI, c'est là qu'est la faute.")
         if "401" in texte or "invalid_api_key" in texte or "Unauthorized" in texte:
-            return ("Le fournisseur refuse la clé (401). Vérifiez qu'elle est "
-                    "entière et qu'elle n'est pas révoquée.")
-        if "404" in texte and "model" in texte.lower():
+            return ("Le fournisseur refuse la clé (401). Deux causes, dans "
+                    "l'ordre : la clé part au mauvais service, ou elle est "
+                    "révoquée ou incomplète. Ouvrez « Modèle » et choisissez le "
+                    "fournisseur qui correspond à votre clé." + ou)
+        if "404" in texte and ("model" in texte.lower() or "modèle" in texte):
             return ("Le fournisseur ne connaît pas ce nom de modèle (404). "
-                    "Corrigez le nom du modèle.")
+                    "Corrigez le nom dans « Modèle » — c'est un mot à changer."
+                    + ou)
         if "429" in texte:
-            return "Le fournisseur limite les appels (429). Réessayez dans un moment."
+            return ("Le fournisseur limite les appels (429). C'est le quota "
+                    "d'une offre gratuite : réessayez dans un moment.")
         if "Name or service not known" in texte or "getaddrinfo" in texte:
-            return ("L'adresse du fournisseur est introuvable : vérifiez l'URL, "
-                    "ou la sortie réseau du serveur.")
+            return ("L'adresse du fournisseur est introuvable : vérifiez-la "
+                    "dans « Modèle », ou la sortie réseau du serveur." + ou)
         return texte[:400]
 
     @staticmethod

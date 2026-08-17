@@ -582,6 +582,9 @@ function remplirChoix(s) {
 /* --------------------------------------------------------------- modèle */
 
 let FOURNISSEURS = {};
+/* Ce qui est RÉELLEMENT en place, par opposition à ce qui est affiché. Les
+   deux se confondent à l'œil, et « Éprouver » essaie le premier. */
+let EN_PLACE = null;
 
 function peindreModele(s) {
   FOURNISSEURS = s.fournisseurs || {};
@@ -604,6 +607,7 @@ function peindreModele(s) {
     }
   }
   const m = s.modele;
+  EN_PLACE = m;
   $('#modele-actuel').textContent = m
     ? `En place : ${m.modele} (${m.fournisseur}), clé …${m.fin_de_cle}.`
     : (s.fournisseur
@@ -672,9 +676,28 @@ $('#formulaire-modele').addEventListener('submit', async evenement => {
   });
 });
 
-$('#m-essai').addEventListener('click', () =>
+/* « Éprouver » essaie CE QUI EST EN PLACE, pas ce qui est à l'écran. Choisir
+   un fournisseur dans la liste remplit les champs sans rien changer au
+   serveur : on éprouvait donc l'ancien réglage en croyant essayer le nouveau,
+   et le refus qui s'affichait n'avait aucun rapport avec ce qu'on lisait. */
+function nonEnregistre() {
+  if ($('#m-cle').value) return true;
+  if (!EN_PLACE) return true;
+  return EN_PLACE.modele !== $('#m-modele').value
+      || EN_PLACE.url !== $('#m-url').value
+      || EN_PLACE.fournisseur !== $('#m-fournisseur').value;
+}
+
+$('#m-essai').addEventListener('click', () => {
+  if (nonEnregistre()) {
+    direModele("Enregistrez d'abord. « Éprouver » essaie le réglage en place "
+      + "sur le serveur, pas celui affiché ici — sans quoi le refus que vous "
+      + "liriez porterait sur l'ancien.", false);
+    return;
+  }
   appelerModele('/modele/essai', {}, $('#m-essai'),
-    () => 'Le fournisseur répond. Le bouton « Concevoir » est utilisable.'));
+    () => 'Le fournisseur répond. Le bouton « Concevoir » est utilisable.');
+});
 
 $('#m-oublier').addEventListener('click', () =>
   appelerModele('/modele/oublier', {}, $('#m-oublier'), donnee =>
