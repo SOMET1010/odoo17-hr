@@ -1,0 +1,87 @@
+{
+  "_commentaire": "Le plus petit module qui prouve la chaîne entière : une application visible dans le menu d'Odoo, un écran de liste, un formulaire, et un enregistrement qu'on peut créer. Rien de plus. Il sert à distinguer « l'outil fabrique mal » de « la pose dans Odoo s'est mal passée » — quand celui-ci apparaît, la chaîne est bonne et le problème est ailleurs.",
+
+  "technical_name": "bonjour_atelier",
+  "name": "Bonjour Atelier",
+  "summary": "Le plus petit module possible : un menu, une liste, un formulaire",
+  "description": "Module d'épreuve produit par l'Atelier. S'il apparaît dans vos applications et qu'on peut y créer une fiche, la chaîne complète fonctionne — de la spécification jusqu'à Odoo.",
+  "category": "Tools",
+  "cible": "17.0",
+  "version": "1.0.0",
+  "license": "LGPL-3",
+  "application": true,
+  "depends": ["base"],
+
+  "models": [
+    {
+      "name": "bonjour.message",
+      "description": "Message",
+      "rec_name": "name",
+      "fields": [
+        {
+          "name": "name",
+          "type": "char",
+          "string": "Message",
+          "required": true,
+          "help": "Le texte à afficher. Essayez « Bonjour »."
+        },
+        {
+          "name": "auteur",
+          "type": "char",
+          "string": "Écrit par"
+        },
+        {
+          "name": "ecrit_le",
+          "type": "date",
+          "string": "Écrit le"
+        }
+      ]
+    }
+  ],
+
+  "views": [
+    {
+      "model": "bonjour.message",
+      "type": "tree",
+      "name": "Messages",
+      "fields": ["name", "auteur", "ecrit_le"]
+    },
+    {
+      "model": "bonjour.message",
+      "type": "form",
+      "name": "Message",
+      "fields": ["name", "auteur", "ecrit_le"]
+    }
+  ],
+
+  "actions": [
+    {
+      "id": "action_bonjour_message",
+      "name": "Messages",
+      "model": "bonjour.message",
+      "view_modes": ["tree", "form"],
+      "help": "Créez un message pour vérifier que tout fonctionne."
+    }
+  ],
+
+  "menus": [
+    {
+      "id": "menu_bonjour_racine",
+      "name": "Bonjour Atelier"
+    },
+    {
+      "id": "menu_bonjour_messages",
+      "name": "Messages",
+      "parent": "menu_bonjour_racine",
+      "action": "action_bonjour_message"
+    }
+  ],
+
+  "access": [
+    {
+      "model": "bonjour.message",
+      "group": "base.group_user",
+      "perms": "rwcd"
+    }
+  ]
+}
