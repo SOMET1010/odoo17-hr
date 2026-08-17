@@ -3096,6 +3096,11 @@ class TestAtelierEnLigne(unittest.TestCase):
         self.jeton = ""
         self._appel("/connexion", {"nom": "marie",
                                    "motdepasse": "une-autre-phrase-secrete"})
+        # Le mot de passe posé par l'administrateur est provisoire : marie ne
+        # peut RIEN faire avant d'en choisir un. C'est le comportement voulu,
+        # et il change la marche de ce contrôle.
+        self._appel("/motdepasse", {"ancien": "une-autre-phrase-secrete",
+                                    "nouveau": "la-phrase-de-marie-a-elle"})
         _, liste, _ = self._appel("/projets")
         self.assertEqual(liste["projets"], [])
 
@@ -3494,3 +3499,202 @@ class TestGestionDesComptes(unittest.TestCase):
             proprietaire=compte.id)
         self._appel("/compte/supprimer", {"nom": "dev1"})
         self.assertEqual(len(module.Poignee.atelier.depot.lister(compte.id)), 1)
+
+
+class TestMotDePasseProvisoire(unittest.TestCase):
+    """Un mot de passe que l'administrateur connaît n'est pas un mot de passe.
+
+    Le panneau « Comptes » de la première version laissait le créateur d'un
+    accès connaître définitivement le mot de passe de chacun. Travailler avec
+    revenait à travailler sous l'identité de quelqu'un d'autre, sans que rien
+    ne le distingue dans les traces.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def _ouvrir_un_acces(self, nom="dev1", motdepasse="mot-de-passe-provisoire"):
+        self._premier_compte()
+        self._appel("/inscription", {"nom": nom, "motdepasse": motdepasse})
+        self.jeton = ""
+        self._appel("/connexion", {"nom": nom, "motdepasse": motdepasse})
+
+    def test_le_compte_cree_arrive_avec_un_mot_de_passe_provisoire(self):
+        self._ouvrir_un_acces()
+        _, sante, _ = self._appel("/sante")
+        self.assertTrue(sante["provisoire"])
+
+    def test_tant_qu_il_est_provisoire_rien_d_autre_n_est_possible(self):
+        """L'écran doit dire la même chose que le serveur ; mais c'est le
+        SERVEUR qui décide, sans quoi il suffit d'ignorer l'écran."""
+        self._ouvrir_un_acces()
+        for chemin in ("/projets", "/module.zip"):
+            code, _, _ = self._appel(chemin)
+            self.assertEqual(code, 403, chemin)
+        code, _, _ = self._appel("/concevoir", {"besoin": "un besoin bien assez long"})
+        self.assertEqual(code, 403)
+
+    def test_changer_le_mot_de_passe_rend_le_compte_utilisable(self):
+        self._ouvrir_un_acces()
+        code, _, _ = self._appel("/motdepasse", {
+            "ancien": "mot-de-passe-provisoire",
+            "nouveau": "une-phrase-que-je-choisis"})
+        self.assertEqual(code, 200)
+        _, sante, _ = self._appel("/sante")
+        self.assertFalse(sante["provisoire"])
+        code, _, _ = self._appel("/projets")
+        self.assertEqual(code, 200)
+
+    def test_changer_sans_l_ancien_est_refuse(self):
+        """Un poste laissé ouvert permettrait sinon à qui passe de
+        s'approprier le compte."""
+        self._ouvrir_un_acces()
+        code, _, _ = self._appel("/motdepasse", {
+            "ancien": "au-hasard", "nouveau": "une-phrase-que-je-choisis"})
+        self.assertEqual(code, 403)
+
+    def test_changer_garde_MA_session_et_ferme_les_autres(self):
+        """Fermer aussi la sienne déconnecterait la personne au moment précis
+        où elle vient de faire ce qu'on lui demandait."""
+        self._ouvrir_un_acces()
+        mien = self.jeton
+        self._appel("/motdepasse", {"ancien": "mot-de-passe-provisoire",
+                                    "nouveau": "une-phrase-que-je-choisis"})
+        self.assertEqual(self.jeton, mien)
+        code, _, _ = self._appel("/projets")
+        self.assertEqual(code, 200)
+
+    def test_l_administrateur_ne_connait_plus_le_mot_de_passe(self):
+        self._ouvrir_un_acces()
+        self._appel("/motdepasse", {"ancien": "mot-de-passe-provisoire",
+                                    "nouveau": "une-phrase-que-je-choisis"})
+        self.jeton = ""
+        code, _, _ = self._appel("/connexion", {
+            "nom": "dev1", "motdepasse": "mot-de-passe-provisoire"})
+        self.assertEqual(code, 401)
+
+
+class TestDesactivation(unittest.TestCase):
+    """Fermer une porte sans effacer la trace de qui a fait quoi."""
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def test_desactiver_coupe_les_sessions_ouvertes(self):
+        """Sans cela, la personne travaille jusqu'à l'expiration de son jeton
+        — trente jours — et « accès retiré » ne veut rien dire."""
+        self._premier_compte()
+        patron = self.jeton
+        self._appel("/inscription", {"nom": "dev1", "motdepasse": "mot-provisoire-x"})
+        self.jeton = ""
+        self._appel("/connexion", {"nom": "dev1", "motdepasse": "mot-provisoire-x"})
+        dev = self.jeton
+        self.assertTrue(dev)
+
+        self.jeton = patron
+        code, _, _ = self._appel("/compte/activer", {"nom": "dev1", "actif": False})
+        self.assertEqual(code, 200)
+
+        self.jeton = dev
+        code, _, _ = self._appel("/sante")
+        _, sante, _ = self._appel("/sante")
+        self.assertIsNone(sante["compte"])
+
+    def test_un_compte_desactive_ne_se_reconnecte_pas(self):
+        self._premier_compte()
+        self._appel("/inscription", {"nom": "dev1", "motdepasse": "mot-provisoire-x"})
+        self._appel("/compte/activer", {"nom": "dev1", "actif": False})
+        self.jeton = ""
+        code, donnee, _ = self._appel("/connexion", {
+            "nom": "dev1", "motdepasse": "mot-provisoire-x"})
+        self.assertEqual(code, 401)
+        # Le motif ne dit PAS que le compte est désactivé : ce serait confirmer
+        # à un inconnu que ce nom existe.
+        self.assertNotIn("désactiv", donnee["erreur"].lower())
+
+    def test_le_dernier_administrateur_ne_peut_pas_etre_desactive(self):
+        """Sans administrateur actif, plus personne ne peut créer ni
+        réactiver : l'instance se ferme sur elle-même."""
+        self._premier_compte()
+        code, donnee, _ = self._appel("/compte/activer",
+                                      {"nom": "pierre", "actif": False})
+        self.assertEqual(code, 400)
+        self.assertIn("soi-même", donnee["erreur"])
+
+    def test_reactiver_rouvre_l_acces(self):
+        self._premier_compte()
+        self._appel("/inscription", {"nom": "dev1", "motdepasse": "mot-provisoire-x"})
+        self._appel("/compte/activer", {"nom": "dev1", "actif": False})
+        self._appel("/compte/activer", {"nom": "dev1", "actif": True})
+        self.jeton = ""
+        code, _, _ = self._appel("/connexion", {"nom": "dev1",
+                                                "motdepasse": "mot-provisoire-x"})
+        self.assertEqual(code, 200)
+
+
+class TestNotifications(unittest.TestCase):
+    """Prévenir, sans jamais laisser fuir ce qui ne doit pas sortir."""
+
+    def setUp(self):
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+        sys.path.insert(0, os.path.join(RACINE, "src"))
+        from persistance.notifications import Notifications
+        self.notifications = Notifications(
+            os.path.join(self._dossier.name, "n.sqlite"))
+
+    def test_un_evenement_ne_porte_jamais_de_secret(self):
+        """Une notification SORT du serveur, souvent vers un service qui
+        l'archive et l'indexe. C'est le dernier endroit où mettre une clé."""
+        from persistance.notifications import Evenement
+        charge = Evenement(
+            genre="compte.cree", sujet="dev1",
+            donnees={"role": "membre", "motdepasse": "secret-a-ne-pas-sortir",
+                     "cle_api": "sk-123", "jeton": "abc"}).en_dict()
+        texte = json.dumps(charge)
+        for interdit in ("secret-a-ne-pas-sortir", "sk-123", "abc"):
+            self.assertNotIn(interdit, texte)
+        self.assertEqual(charge["donnees"], {"role": "membre"})
+
+    def test_l_echec_d_envoi_n_empeche_pas_l_acte(self):
+        """Créer un compte doit réussir même si le service de notification est
+        en panne : l'inverse ferait dépendre l'administration de l'Atelier
+        d'un service qui n'a rien à voir."""
+        from persistance.notifications import Evenement
+        os.environ["NOTIF_WEBHOOK_URL"] = "https://127.0.0.1:1/inexistant"
+        self.addCleanup(os.environ.pop, "NOTIF_WEBHOOK_URL", None)
+        identifiant = self.notifications.signaler(
+            Evenement("compte.cree", "dev1"), "2026-08-17T10:00:00")
+        self.assertTrue(identifiant)
+        trace = self.notifications.journal()[0]
+        # L'échec est JOURNALISÉ, jamais silencieux.
+        self.assertNotEqual(trace["remis"], "ok")
+        self.assertEqual(trace["sujet"], "dev1")
+
+    def test_un_webhook_en_clair_est_refuse(self):
+        """Un événement porte des noms de comptes : en clair, ça se lit."""
+        from persistance.notifications import Evenement, Notifications
+        os.environ["NOTIF_WEBHOOK_URL"] = "http://hub.exemple.fr/evenements"
+        self.addCleanup(os.environ.pop, "NOTIF_WEBHOOK_URL", None)
+        with self.assertRaises(ValueError) as boite:
+            Notifications._vers_webhook(Evenement("compte.cree", "dev1"))
+        self.assertIn("https", str(boite.exception))
+
+    def test_sans_configuration_rien_ne_part_et_tout_se_journalise(self):
+        from persistance.notifications import Evenement, Notifications
+        for variable in ("NOTIF_WEBHOOK_URL", "NOTIF_SMTP_HOTE"):
+            os.environ.pop(variable, None)
+        self.notifications.signaler(
+            Evenement("compte.cree", "dev1", "Accès créé.", par="pierre"),
+            "2026-08-17T10:00:00")
+        trace = self.notifications.journal()[0]
+        self.assertEqual(trace["remis"], "ok")
+        self.assertEqual(trace["par"], "pierre")
+        self.assertEqual(Notifications.voies_configurees(),
+                         {"webhook": False, "courriel": False})

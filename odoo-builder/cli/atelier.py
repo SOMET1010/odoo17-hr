@@ -78,6 +78,7 @@ from persistance.comptes import (  # noqa: E402
     DUREE_SESSION_JOURS, CompteInvalide, Comptes,
 )
 from persistance.depot import Depot, ProjetInaccessible  # noqa: E402
+from persistance.notifications import Evenement, Notifications  # noqa: E402
 from persistance.reglages import (  # noqa: E402
     FOURNISSEURS, Reglages, ReglageInvalide,
 )
@@ -112,6 +113,7 @@ class Atelier:
         self.depot = Depot()
         self.comptes = Comptes(self.depot.chemin)
         self.reglages = Reglages(self.depot.chemin)
+        self.notifications = Notifications(self.depot.chemin)
         # Le compte qui travaille. Vide en local sans comptes : les projets
         # appartiennent alors au « poste », ce qui est exactement ce qu'on
         # veut d'un outil personnel.
@@ -133,6 +135,20 @@ class Atelier:
             proprietaire=self.compte,
         )
         self.noter(f"Projet enregistré ({self.projet}).")
+
+    def signaler(self, genre: str, sujet: str, detail: str = "",
+                 par: str = "") -> None:
+        """Journalise, et prévient qui est branché. Ne lève jamais.
+
+        Un acte d'administration réussi ne doit pas être annulé parce qu'un
+        service de notification est en panne.
+        """
+        try:
+            self.notifications.signaler(
+                Evenement(genre=genre, sujet=sujet, detail=detail, par=par),
+                self.maintenant())
+        except Exception:                                     # noqa: BLE001
+            pass
 
     def noter(self, ligne: str) -> None:
         self.journal.append(str(ligne).rstrip())
@@ -484,6 +500,9 @@ class Poignee(BaseHTTPRequestHandler):
                 "connecte": identifie and self.compte is not None,
                 "compte": self.compte.en_dict() if self.compte else None,
                 "comptes_existants": bool(self.atelier.comptes.combien()),
+                # Tant que le mot de passe est provisoire, la seule chose que
+                # le compte puisse faire est d'en changer.
+                "provisoire": bool(self.compte and self.compte.provisoire),
                 "ouvert": self.server.ouvert,
                 # Ne dit PAS le code, seulement qu'il en faut un.
                 "code_requis": bool(self.server.ouvert
@@ -502,6 +521,15 @@ class Poignee(BaseHTTPRequestHandler):
             return self._repondre(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
         if not identifie:
             return self._json(401, {"erreur": "connexion requise"})
+        if self._bloque_par_mot_de_passe_provisoire(chemin):
+            return self._json(403, {"erreur": "Changez d'abord votre mot de passe.",
+                                    "provisoire": True})
+        if chemin == "/notifications":
+            if not (self.compte and self.compte.administrateur):
+                return self._json(403, {"erreur": "Réservé aux administrateurs."})
+            return self._json(200, {
+                "journal": self.atelier.notifications.journal(),
+                "voies": Notifications.voies_configurees()})
         if chemin == "/comptes":
             if not (self.compte and self.compte.administrateur):
                 return self._json(403, {
@@ -551,6 +579,8 @@ class Poignee(BaseHTTPRequestHandler):
             return self._connecter(donnee)
         if chemin == "/inscription":
             return self._inscrire(donnee)
+        if chemin == "/compte/activer":
+            return self._activer_compte(donnee)
         if chemin == "/compte/supprimer":
             return self._supprimer_compte(donnee)
         if chemin == "/modele":
@@ -559,6 +589,8 @@ class Poignee(BaseHTTPRequestHandler):
             return self._oublier_modele()
         if chemin == "/modele/essai":
             return self._essayer_modele()
+        if chemin == "/motdepasse":
+            return self._changer_motdepasse(donnee)
         if chemin == "/deconnexion":
             self.atelier.comptes.fermer_session(self._jeton())
             self.atelier.nouveau()
@@ -567,6 +599,9 @@ class Poignee(BaseHTTPRequestHandler):
             return self._json(200, {"deconnecte": True})
         if not identifie:
             return self._json(401, {"erreur": "connexion requise"})
+        if self._bloque_par_mot_de_passe_provisoire(chemin):
+            return self._json(403, {"erreur": "Changez d'abord votre mot de passe.",
+                                    "provisoire": True})
         cible = donnee.get("cible") or "17.0"
         if cible not in CIBLES:
             return self._json(400, {"erreur": f"cible inconnue « {cible} »"})
@@ -720,9 +755,19 @@ class Poignee(BaseHTTPRequestHandler):
             compte = self.atelier.comptes.creer(
                 (donnee.get("nom") or "").strip(),
                 donnee.get("motdepasse") or "", Atelier.maintenant(),
-                role="administrateur" if premier else "membre")
+                role=("administrateur" if premier
+                      else (donnee.get("role") or "membre")),
+                # Le mot de passe posé par un administrateur est PROVISOIRE :
+                # il le connaît. Le compte devra en choisir un à sa première
+                # connexion, et lui seul le connaîtra ensuite.
+                provisoire=not premier,
+                cree_par="" if premier else self.compte.nom)
         except CompteInvalide as erreur:
             return self._json(400, {"erreur": str(erreur)})
+        self.atelier.signaler(
+            "compte.cree", compte.nom,
+            f"Accès {compte.role} créé.",
+            par="installation" if premier else self.compte.nom)
         if premier:
             _, jeton = self.atelier.comptes.ouvrir_session(
                 compte.nom, donnee.get("motdepasse"), Atelier.maintenant(),
@@ -730,6 +775,64 @@ class Poignee(BaseHTTPRequestHandler):
             self.atelier.compte = compte.id
             self._poser_cookie(jeton)
         return self._json(200, {"compte": compte.en_dict(), "premier": premier})
+
+    # Les seules routes ouvertes à un compte encore provisoire. Tout le reste
+    # attend : un mot de passe que l'administrateur connaît n'est pas un mot de
+    # passe, et travailler avec reviendrait à travailler sous son identité.
+    OUVERTES_EN_PROVISOIRE = ("/sante", "/", "/motdepasse", "/deconnexion",
+                              "/connexion", "/inscription")
+
+    def _bloque_par_mot_de_passe_provisoire(self, chemin: str) -> bool:
+        return bool(self.compte and self.compte.provisoire
+                    and chemin not in self.OUVERTES_EN_PROVISOIRE)
+
+    def _changer_motdepasse(self, donnee: dict):
+        """Chacun change le sien. C'est la seule route ouverte à un compte
+        dont le mot de passe est encore provisoire."""
+        if not self.compte:
+            return self._json(401, {"erreur": "connexion requise"})
+        ancien = donnee.get("ancien") or ""
+        # On revérifie l'ancien mot de passe : un poste laissé ouvert
+        # permettrait sinon à qui passe de s'approprier le compte.
+        if self.atelier.comptes.ouvrir_session(
+                self.compte.nom, ancien, Atelier.maintenant(),
+                self._expiration()) is None:
+            return self._json(403, {"erreur": "Mot de passe actuel incorrect."})
+        try:
+            self.atelier.comptes.changer_motdepasse(
+                self.compte.id, donnee.get("nouveau") or "",
+                garder_session=self._jeton())
+        except CompteInvalide as erreur:
+            return self._json(400, {"erreur": str(erreur)})
+        self.atelier.signaler("compte.motdepasse", self.compte.nom,
+                              "Mot de passe changé ; les autres sessions sont "
+                              "fermées.", par=self.compte.nom)
+        return self._json(200, {"change": True})
+
+    def _activer_compte(self, donnee: dict):
+        if not (self.compte and self.compte.administrateur):
+            return self._json(403, {"erreur": "Réservé aux administrateurs."})
+        nom = (donnee.get("nom") or "").strip()
+        actif = bool(donnee.get("actif"))
+        if nom == self.compte.nom and not actif:
+            return self._json(400, {
+                "erreur": "On ne se désactive pas soi-même."})
+        if not actif and self.atelier.comptes.administrateurs_actifs() <= 1:
+            compte = self.atelier.comptes.compte(nom)
+            if compte and compte.administrateur:
+                # Sans administrateur actif, plus personne ne peut créer de
+                # compte ni en réactiver un : l'instance se ferme sur
+                # elle-même.
+                return self._json(400, {
+                    "erreur": "C'est le dernier administrateur actif."})
+        if not self.atelier.comptes.activer(nom, actif):
+            return self._json(404, {"erreur": f"Compte « {nom} » introuvable."})
+        self.atelier.signaler(
+            "compte.actif" if actif else "compte.desactive", nom,
+            "Accès rouvert." if actif
+            else "Accès fermé ; les sessions ouvertes sont coupées.",
+            par=self.compte.nom)
+        return self._json(200, {"nom": nom, "actif": actif})
 
     def _supprimer_compte(self, donnee: dict):
         if not (self.compte and self.compte.administrateur):
@@ -744,6 +847,9 @@ class Poignee(BaseHTTPRequestHandler):
                           "personne ne pourrait en créer."})
         if not self.atelier.comptes.supprimer(nom):
             return self._json(404, {"erreur": f"Compte « {nom} » introuvable."})
+        self.atelier.signaler("compte.supprime", nom,
+                              "Compte supprimé ; ses projets sont conservés.",
+                              par=self.compte.nom)
         # Ses projets lui survivent : fermer une porte n'est pas effacer du
         # travail.
         return self._json(200, {"supprime": nom})

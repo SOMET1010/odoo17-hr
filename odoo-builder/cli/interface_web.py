@@ -108,6 +108,7 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
     <span class="etat" id="etat">…</span>
     <button class="lien-clair" id="ouvrir-modele" hidden>Modèle</button>
     <button class="lien-clair" id="ouvrir-comptes" hidden>Comptes</button>
+    <button class="lien-clair" id="ouvrir-motdepasse" hidden>Mot de passe</button>
     <span class="etat" id="qui" hidden></span>
     <button class="lien-clair" id="deconnexion" hidden>Se déconnecter</button>
   </span>
@@ -172,6 +173,32 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   </form>
 </div>
 
+<div id="volet-motdepasse" class="porte" hidden>
+  <form class="carte guichet" id="formulaire-motdepasse">
+    <h2 id="titre-mdp">Changer le mot de passe</h2>
+    <p class="pied" id="mot-mdp"></p>
+    <div>
+      <label for="x-ancien">Mot de passe actuel</label>
+      <input id="x-ancien" type="password" autocomplete="current-password">
+    </div>
+    <div>
+      <label for="x-nouveau">Nouveau mot de passe</label>
+      <input id="x-nouveau" type="password" autocomplete="new-password">
+      <p class="pied">Au moins 12 caractères. Une phrase dont vous vous
+        souvenez vaut mieux qu'un mot compliqué.</p>
+    </div>
+    <div>
+      <label for="x-repete">Répétez-le</label>
+      <input id="x-repete" type="password" autocomplete="new-password">
+    </div>
+    <div id="mdp-erreur" class="erreur" hidden></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="submit" id="x-valider">Changer</button>
+      <button type="button" class="second" id="x-fermer">Fermer</button>
+    </div>
+  </form>
+</div>
+
 <div id="volet-comptes" class="porte" hidden>
   <form class="carte guichet" id="formulaire-compte" style="width:min(560px,100%)">
     <h2>Qui a accès à cet Atelier</h2>
@@ -187,6 +214,13 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <div>
         <label for="c-mdp">Mot de passe provisoire</label>
         <input id="c-mdp" type="text" autocomplete="off">
+      </div>
+      <div style="max-width:170px">
+        <label for="c-role">Rôle</label>
+        <select id="c-role">
+          <option value="membre">Membre</option>
+          <option value="administrateur">Administrateur</option>
+        </select>
       </div>
     </div>
     <p class="pied">Au moins 12 caractères. Une phrase dont on se souvient vaut
@@ -441,7 +475,13 @@ $('#theme').addEventListener('click', e => appeler('/theme', {
 }, e.target));
 
 async function listerProjets() {
-  const r = await fetch('/projets'); const d = await r.json();
+  const r = await fetch('/projets');
+  /* Cette route ne rend pas TOUJOURS une liste : session révoquée (401) ou
+     mot de passe encore provisoire (403) rendent un motif. Supposer la liste
+     laissait la page cassée en silence — l'erreur n'apparaissait que dans la
+     console, et l'utilisateur voyait un écran figé sans explication. */
+  if (!r.ok) { await etat(); return; }
+  const d = await r.json();
   const zone = $('#projets');
   zone.innerHTML = '';
   if (!d.projets.length) {
@@ -558,6 +598,21 @@ async function etat() {
      racontait autre chose. Un état qui change doit se repeindre là où on le
      relit. */
   peindreModele(s);
+  $('#ouvrir-motdepasse').hidden = !s.compte;
+
+  /* UN MOT DE PASSE QUE L'ADMINISTRATEUR CONNAÎT N'EST PAS UN MOT DE PASSE.
+     Tant qu'il est provisoire, la seule chose possible est d'en changer : le
+     serveur refuse tout le reste, et l'écran doit dire la même chose que lui —
+     sinon on clique sur des boutons qui répondent 403 sans raison lisible. */
+  PROVISOIRE = !!s.provisoire;
+  $('#volet-motdepasse').hidden = !PROVISOIRE;
+  if (PROVISOIRE) {
+    $('#titre-mdp').textContent = 'Choisissez votre mot de passe';
+    $('#mot-mdp').textContent = "Celui qu'on vous a transmis est provisoire : "
+      + "la personne qui a créé votre accès le connaît. Tant qu'il n'est pas "
+      + "changé, rien d'autre n'est accessible.";
+    $('#x-fermer').hidden = true;
+  }
   return s;
 }
 
@@ -609,6 +664,44 @@ function remplirChoix(s) {
   if ($('#t-densite').querySelector('[value=normale]')) $('#t-densite').value = 'normale';
 }
 
+/* --------------------------------------------------------- mot de passe */
+
+let PROVISOIRE = false;
+
+$('#ouvrir-motdepasse').addEventListener('click', () => {
+  $('#titre-mdp').textContent = 'Changer le mot de passe';
+  $('#mot-mdp').textContent = "Changer ferme toutes vos autres sessions — "
+    + "c'est justement ce qu'on veut quand on soupçonne que quelqu'un d'autre "
+    + "est entré.";
+  $('#x-fermer').hidden = false;
+  $('#mdp-erreur').hidden = true;
+  $('#volet-motdepasse').hidden = false;
+});
+$('#x-fermer').addEventListener('click', () => {
+  $('#volet-motdepasse').hidden = true;
+});
+
+$('#formulaire-motdepasse').addEventListener('submit', async evenement => {
+  evenement.preventDefault();
+  const boite = $('#mdp-erreur');
+  boite.hidden = true;
+  if ($('#x-nouveau').value !== $('#x-repete').value) {
+    boite.textContent = 'Les deux saisies diffèrent.'; boite.hidden = false; return;
+  }
+  const reponse = await fetch('/motdepasse', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ancien: $('#x-ancien').value,
+                          nouveau: $('#x-nouveau').value}),
+  });
+  const donnee = await reponse.json();
+  if (!reponse.ok) {
+    boite.textContent = donnee.erreur || 'Échec.'; boite.hidden = false; return;
+  }
+  $('#x-ancien').value = ''; $('#x-nouveau').value = ''; $('#x-repete').value = '';
+  $('#volet-motdepasse').hidden = true;
+  await demarrer();
+});
+
 /* -------------------------------------------------------------- comptes */
 
 async function listerComptes() {
@@ -625,8 +718,30 @@ async function listerComptes() {
     nom.textContent = c.nom;
     const meta = document.createElement('span');
     meta.className = 'meta';
-    meta.textContent = (c.role === 'administrateur' ? 'admin' : 'membre')
-      + ' · ' + (c.vu_le ? 'vu le ' + c.vu_le.slice(0, 10) : 'jamais connecté');
+    const etats = [c.role === 'administrateur' ? 'admin' : 'membre'];
+    if (!c.actif) etats.push('désactivé');
+    else if (c.provisoire) etats.push('mot de passe provisoire');
+    etats.push(c.vu_le ? 'vu le ' + c.vu_le.slice(0, 10) : 'jamais connecté');
+    if (c.sessions) etats.push(c.sessions + ' session(s)');
+    meta.textContent = etats.join(' · ');
+
+    /* Désactiver plutôt que supprimer : on ferme la porte sans effacer la
+       trace de qui a fait quoi, et on peut rouvrir. */
+    const bascule = document.createElement('button');
+    bascule.type = 'button'; bascule.className = 'second';
+    bascule.textContent = c.actif ? 'Désactiver' : 'Réactiver';
+    bascule.addEventListener('click', async () => {
+      const reponse = await fetch('/compte/activer', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({nom: c.nom, actif: !c.actif}),
+      });
+      const donnee = await reponse.json();
+      if (!reponse.ok) { direCompte(donnee.erreur || 'Échec.', false); return; }
+      direCompte(c.actif
+        ? `Accès de « ${c.nom} » fermé, ses sessions coupées.`
+        : `Accès de « ${c.nom} » rouvert.`, true);
+      listerComptes();
+    });
     const oter = document.createElement('button');
     oter.className = 'oter'; oter.type = 'button'; oter.textContent = '×';
     oter.title = "Retirer l'accès (les projets sont conservés)";
@@ -640,7 +755,7 @@ async function listerComptes() {
       direCompte(`Accès de « ${c.nom} » retiré. Ses projets sont conservés.`, true);
       listerComptes();
     });
-    ligne.append(nom, meta, oter);
+    ligne.append(nom, meta, bascule, oter);
     boite.appendChild(ligne);
   }
 }
@@ -677,12 +792,14 @@ $('#formulaire-compte').addEventListener('submit', async evenement => {
   try {
     const reponse = await fetch('/inscription', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({nom: $('#c-nom').value, motdepasse: $('#c-mdp').value}),
+      body: JSON.stringify({nom: $('#c-nom').value, motdepasse: $('#c-mdp').value,
+                            role: $('#c-role').value}),
     });
     const donnee = await reponse.json();
     if (!reponse.ok) { direCompte(donnee.erreur || 'Échec.', false); return; }
-    direCompte(`Accès créé pour « ${donnee.compte.nom} ». Transmettez-lui le `
-      + `mot de passe : il n'est affiché qu'ici, et jamais réaffiché ensuite.`, true);
+    direCompte(`Accès créé pour « ${donnee.compte.nom} ». Transmettez-lui ce mot `
+      + `de passe PROVISOIRE : il devra en choisir un autre à sa première `
+      + `connexion, et vous ne le connaîtrez pas.`, true);
     $('#c-nom').value = '';
     listerComptes();
   } finally { bouton.disabled = false; bouton.textContent = libelle; }

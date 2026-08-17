@@ -50,7 +50,15 @@ CREATE TABLE IF NOT EXISTS compte (
     empreinte  TEXT NOT NULL,
     role       TEXT NOT NULL DEFAULT 'membre',   -- « membre » ou « administrateur »
     cree_le    TEXT NOT NULL,
-    vu_le      TEXT NOT NULL DEFAULT ''
+    vu_le      TEXT NOT NULL DEFAULT '',
+    -- Un mot de passe posé par l'administrateur est PROVISOIRE : il le
+    -- connaît. Tant que ce drapeau est levé, la seule chose que le compte
+    -- puisse faire est d'en changer.
+    provisoire INTEGER NOT NULL DEFAULT 0,
+    -- Désactiver plutôt que supprimer : on ferme la porte sans effacer la
+    -- trace de qui a fait quoi, et on peut rouvrir.
+    actif      INTEGER NOT NULL DEFAULT 1,
+    cree_par   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS session (
@@ -73,13 +81,23 @@ class Compte:
     id: str
     nom: str
     role: str
+    provisoire: bool = False
+    actif: bool = True
 
     @property
     def administrateur(self) -> bool:
         return self.role == "administrateur"
 
     def en_dict(self) -> dict:
-        return {"id": self.id, "nom": self.nom, "role": self.role}
+        return {"id": self.id, "nom": self.nom, "role": self.role,
+                "provisoire": self.provisoire}
+
+
+def _depuis_ligne(ligne) -> Compte:
+    """Une ligne de base devient un compte. Un seul endroit qui sache le faire."""
+    return Compte(ligne["id"], ligne["nom"], ligne["role"],
+                  provisoire=bool(ligne["provisoire"]),
+                  actif=bool(ligne["actif"]))
 
 
 def empreinte(motdepasse: str, sel: bytes | None = None, tours: int = TOURS) -> str:
@@ -112,11 +130,25 @@ def verifier(motdepasse: str, stockee: str) -> bool:
 class Comptes:
     """Les comptes et les sessions, dans le même fichier que les projets."""
 
+    # Les colonnes ajoutées après coup. Une base créée par une version
+    # antérieure ne les a pas ; « ALTER TABLE » au démarrage évite d'avoir à
+    # refaire le fichier — donc de perdre les comptes déjà créés.
+    AJOUTS = (
+        ("provisoire", "INTEGER NOT NULL DEFAULT 0"),
+        ("actif", "INTEGER NOT NULL DEFAULT 1"),
+        ("cree_par", "TEXT NOT NULL DEFAULT ''"),
+    )
+
     def __init__(self, chemin: str):
         self.chemin = chemin
         os.makedirs(os.path.dirname(self.chemin) or ".", exist_ok=True)
         with self._lien() as lien:
             lien.executescript(SCHEMA)
+            existantes = {c["name"] for c in
+                          lien.execute("PRAGMA table_info(compte)").fetchall()}
+            for nom, definition in self.AJOUTS:
+                if nom not in existantes:
+                    lien.execute(f"ALTER TABLE compte ADD COLUMN {nom} {definition}")
 
     def _lien(self) -> sqlite3.Connection:
         lien = sqlite3.connect(self.chemin)
@@ -127,7 +159,8 @@ class Comptes:
     # -------------------------------------------------------------- comptes
 
     def creer(self, nom: str, motdepasse: str, horodatage: str,
-              role: str = "membre") -> Compte:
+              role: str = "membre", provisoire: bool = False,
+              cree_par: str = "") -> Compte:
         if not NOM.match(nom or ""):
             raise CompteInvalide(
                 "Le nom d'utilisateur doit faire 3 à 32 caractères, en lettres, "
@@ -147,20 +180,51 @@ class Comptes:
         try:
             with self._lien() as lien:
                 lien.execute(
-                    "INSERT INTO compte (id, nom, empreinte, role, cree_le) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (identifiant, nom, empreinte(motdepasse), role, horodatage),
+                    "INSERT INTO compte (id, nom, empreinte, role, cree_le, "
+                    "provisoire, cree_par) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (identifiant, nom, empreinte(motdepasse), role, horodatage,
+                     1 if provisoire else 0, cree_par),
                 )
         except sqlite3.IntegrityError:
             raise CompteInvalide(f"Le nom « {nom} » est déjà pris.")
-        return Compte(identifiant, nom, role)
+        return Compte(identifiant, nom, role, provisoire=provisoire)
 
     def compte(self, nom: str) -> Compte | None:
         with self._lien() as lien:
             ligne = lien.execute(
-                "SELECT id, nom, role FROM compte WHERE nom = ?", (nom,)
-            ).fetchone()
-        return Compte(ligne["id"], ligne["nom"], ligne["role"]) if ligne else None
+                "SELECT id, nom, role, provisoire, actif FROM compte "
+                "WHERE nom = ?", (nom,)).fetchone()
+        return _depuis_ligne(ligne) if ligne else None
+
+    def activer(self, nom: str, actif: bool) -> bool:
+        """Fermer une porte sans effacer la trace de qui a fait quoi.
+
+        Désactiver ferme aussi les sessions ouvertes : sans cela, la personne
+        continue de travailler jusqu'à l'expiration de son jeton — trente
+        jours — et « accès retiré » ne veut rien dire.
+        """
+        with self._lien() as lien:
+            curseur = lien.execute(
+                "UPDATE compte SET actif = ? WHERE nom = ?",
+                (1 if actif else 0, nom))
+            if not actif:
+                lien.execute(
+                    "DELETE FROM session WHERE compte IN "
+                    "(SELECT id FROM compte WHERE nom = ?)", (nom,))
+            return curseur.rowcount > 0
+
+    def fermer_les_sessions(self, nom: str) -> int:
+        with self._lien() as lien:
+            curseur = lien.execute(
+                "DELETE FROM session WHERE compte IN "
+                "(SELECT id FROM compte WHERE nom = ?)", (nom,))
+            return curseur.rowcount
+
+    def administrateurs_actifs(self) -> int:
+        with self._lien() as lien:
+            return lien.execute(
+                "SELECT COUNT(*) AS n FROM compte WHERE actif = 1 "
+                "AND role = 'administrateur'").fetchone()["n"]
 
     def lister(self) -> list[Compte]:
         """Qui a accès, pour que l'administrateur puisse le savoir.
@@ -171,16 +235,19 @@ class Comptes:
         """
         with self._lien() as lien:
             lignes = lien.execute(
-                "SELECT id, nom, role, cree_le, vu_le FROM compte "
+                "SELECT id, nom, role, provisoire, actif FROM compte "
                 "ORDER BY cree_le").fetchall()
-        return [Compte(l["id"], l["nom"], l["role"]) for l in lignes]
+        return [_depuis_ligne(l) for l in lignes]
 
     def journal_des_comptes(self) -> list[dict]:
         """La même liste, avec les dates — pour l'écran, pas pour la logique."""
         with self._lien() as lien:
             lignes = lien.execute(
-                "SELECT nom, role, cree_le, vu_le FROM compte ORDER BY cree_le"
-            ).fetchall()
+                "SELECT c.nom, c.role, c.cree_le, c.vu_le, c.provisoire, "
+                "c.actif, c.cree_par, "
+                "(SELECT COUNT(*) FROM session s WHERE s.compte = c.id) "
+                "AS sessions "
+                "FROM compte c ORDER BY c.cree_le").fetchall()
         return [dict(l) for l in lignes]
 
     def supprimer(self, nom: str) -> bool:
@@ -197,7 +264,8 @@ class Comptes:
         with self._lien() as lien:
             return lien.execute("SELECT COUNT(*) AS n FROM compte").fetchone()["n"]
 
-    def changer_motdepasse(self, identifiant: str, motdepasse: str) -> None:
+    def changer_motdepasse(self, identifiant: str, motdepasse: str,
+                           garder_session: str = "") -> None:
         """Change le mot de passe ET ferme les sessions ouvertes ailleurs.
 
         Laisser vivre les sessions après un changement de mot de passe vide
@@ -207,9 +275,16 @@ class Comptes:
         if len(motdepasse or "") < 12:
             raise CompteInvalide("Le mot de passe doit faire au moins 12 caractères.")
         with self._lien() as lien:
-            lien.execute("UPDATE compte SET empreinte = ? WHERE id = ?",
-                         (empreinte(motdepasse), identifiant))
-            lien.execute("DELETE FROM session WHERE compte = ?", (identifiant,))
+            # « provisoire » retombe : c'est l'acte même de choisir son mot de
+            # passe qui rend le compte utilisable.
+            lien.execute(
+                "UPDATE compte SET empreinte = ?, provisoire = 0 WHERE id = ?",
+                (empreinte(motdepasse), identifiant))
+            # Toutes les sessions SAUF celle qui vient de changer le mot de
+            # passe : la fermer aussi déconnecterait la personne au moment
+            # précis où elle vient de faire ce qu'on lui demandait.
+            lien.execute("DELETE FROM session WHERE compte = ? AND jeton != ?",
+                         (identifiant, garder_session))
 
     # ------------------------------------------------------------- sessions
 
@@ -222,14 +297,18 @@ class Comptes:
         """
         with self._lien() as lien:
             ligne = lien.execute(
-                "SELECT id, nom, role, empreinte FROM compte WHERE nom = ?", (nom,)
-            ).fetchone()
+                "SELECT id, nom, role, empreinte, provisoire, actif "
+                "FROM compte WHERE nom = ?", (nom,)).fetchone()
         if ligne is None:
             # Même travail que pour un compte réel : sans cela, la RAPIDITÉ de
             # la réponse révèle qu'un nom n'existe pas.
             empreinte(motdepasse or "", tours=TOURS)
             return None
         if not verifier(motdepasse or "", ligne["empreinte"]):
+            return None
+        if not ligne["actif"]:
+            # Même réponse qu'un mot de passe faux : dire « compte désactivé »
+            # confirmerait à un inconnu que ce nom existe.
             return None
 
         jeton = secrets.token_urlsafe(32)
@@ -239,14 +318,15 @@ class Comptes:
                 "VALUES (?, ?, ?, ?)", (jeton, ligne["id"], horodatage, expire_le))
             lien.execute("UPDATE compte SET vu_le = ? WHERE id = ?",
                          (horodatage, ligne["id"]))
-        return Compte(ligne["id"], ligne["nom"], ligne["role"]), jeton
+        return _depuis_ligne(ligne), jeton
 
     def session(self, jeton: str, maintenant: str) -> Compte | None:
         if not jeton:
             return None
         with self._lien() as lien:
             ligne = lien.execute(
-                "SELECT c.id, c.nom, c.role, s.expire_le FROM session s "
+                "SELECT c.id, c.nom, c.role, c.provisoire, c.actif, "
+                "s.expire_le FROM session s "
                 "JOIN compte c ON c.id = s.compte WHERE s.jeton = ?", (jeton,)
             ).fetchone()
             if ligne is None:
@@ -256,7 +336,9 @@ class Comptes:
                 # grossit indéfiniment de jetons qui ne servent plus.
                 lien.execute("DELETE FROM session WHERE jeton = ?", (jeton,))
                 return None
-        return Compte(ligne["id"], ligne["nom"], ligne["role"])
+        if not ligne["actif"]:
+            return None
+        return _depuis_ligne(ligne)
 
     def fermer_session(self, jeton: str) -> None:
         with self._lien() as lien:
