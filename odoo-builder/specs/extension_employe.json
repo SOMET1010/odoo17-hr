@@ -1,0 +1,53 @@
+{
+  "_commentaire": "Étendre un module d'Odoo au lieu d'en refaire un. Ce module n'invente aucun écran : il ajoute deux champs à « hr.employee » et les greffe dans le formulaire employé livré par Odoo. C'est le cas d'usage le plus demandé, et le seul qui soit propre juridiquement face à un module qu'on n'a pas le droit de recopier — on n'en reprend pas une ligne, on s'y accroche. La recette multi-versions l'installe dans un Odoo 17, 18 et 19 réels : c'est la seule preuve qui vaille, puisque l'ancre « work_email » appartient à un module qu'on ne lit pas.",
+
+  "technical_name": "ansut_employe_matricule",
+  "name": "Matricule des agents",
+  "summary": "Ajoute un matricule et une date de titularisation à la fiche employé",
+  "category": "Human Resources",
+  "cible": "17.0",
+  "version": "1.0.0",
+  "license": "LGPL-3",
+  "application": false,
+  "depends": ["base", "hr"],
+
+  "models": [
+    {
+      "name": "hr.employee",
+      "inherit": "hr.employee",
+      "fields": [
+        {
+          "name": "x_matricule",
+          "type": "char",
+          "string": "Matricule",
+          "help": "Identifiant de l'agent dans le registre du personnel."
+        },
+        {
+          "name": "x_date_titularisation",
+          "type": "date",
+          "string": "Date de titularisation"
+        }
+      ]
+    }
+  ],
+
+  "views": [
+    {
+      "model": "hr.employee",
+      "type": "form",
+      "name": "Fiche employé — matricule",
+      "herite": "hr.view_employee_form",
+      "insertions": [
+        {
+          "ancre": "work_email",
+          "position": "after",
+          "champs": ["x_matricule", "x_date_titularisation"]
+        }
+      ]
+    }
+  ],
+
+  "actions": [],
+  "menus": [],
+  "access": []
+}

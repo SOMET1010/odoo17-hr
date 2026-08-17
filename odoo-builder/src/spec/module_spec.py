@@ -194,6 +194,42 @@ class Modele:
                     )
 
 
+# Les positions permises pour une insertion. « replace » est délibérément
+# absent : remplacer l'existant d'un module tiers casse silencieusement les
+# autres modules qui s'y accrochent, et le jour où ça se voit, personne ne
+# sait plus qui a retiré quoi. Ajouter est réversible ; remplacer ne l'est pas.
+POSITIONS = ("after", "before", "inside")
+
+
+@dataclass
+class Insertion:
+    """Où greffer des champs dans une vue qu'on n'a pas écrite.
+
+    L'ancre est un NOM DE CHAMP, jamais un chemin XPath. C'est le choix
+    important de cette structure : un chemin décrit la forme de l'écran, qui
+    change à chaque version d'Odoo et à chaque module installé à côté ; un nom
+    de champ décrit le métier, et survit. « <field name="x" position="after"> »
+    est d'ailleurs l'idiome qu'Odoo emploie lui-même partout.
+    """
+
+    ancre: str
+    champs: list[str] = field(default_factory=list)
+    position: str = "after"
+
+    def valider(self, ou: str) -> None:
+        if self.position not in POSITIONS:
+            raise SpecInvalide(
+                f"{ou} : position « {self.position} » inconnue. "
+                f"Choisir parmi {', '.join(POSITIONS)}.")
+        if not NOM_TECHNIQUE.match(self.ancre or ""):
+            raise SpecInvalide(f"{ou} : ancre invalide « {self.ancre} ».")
+        if not self.champs:
+            raise SpecInvalide(f"{ou} : aucune insertion — rien à greffer.")
+        for nom in self.champs:
+            if not NOM_TECHNIQUE.match(nom or ""):
+                raise SpecInvalide(f"{ou} : champ invalide « {nom} ».")
+
+
 @dataclass
 class Vue:
     model: str
@@ -202,12 +238,48 @@ class Vue:
     fields: list[str] = field(default_factory=list)
     # Champs à garder invisibles : indispensables quand un domaine les référence.
     invisible_fields: list[str] = field(default_factory=list)
+    # L'identifiant externe de la vue à étendre, « module.identifiant ».
+    # Renseigné, la vue n'est plus écrite : elle est GREFFÉE sur celle d'un
+    # autre module. C'est ce qui distingue « améliorer l'existant » de
+    # « refaire à côté » — et c'est la seule façon propre de toucher à un
+    # module qu'on n'a pas le droit de recopier.
+    herite: str | None = None
+    insertions: list[Insertion] = field(default_factory=list)
+
+    @property
+    def est_greffe(self) -> bool:
+        return bool(self.herite)
 
     def valider(self) -> None:
         if self.type not in TYPES_VUES:
             raise SpecInvalide(f"Type de vue inconnu « {self.type} » sur {self.model}.")
         if not NOM_MODELE_LU.match(self.model):
             raise SpecInvalide(f"Vue {self.name} : modèle invalide « {self.model} ».")
+        if not self.est_greffe:
+            if self.insertions:
+                raise SpecInvalide(
+                    f"Vue {self.name} : des insertions sans « herite ». Une "
+                    "greffe demande la vue à étendre.")
+            return
+        # Un identifiant externe sans module ne désigne rien hors du module
+        # courant — et une greffe sur soi-même n'a pas de sens ici.
+        if "." not in (self.herite or ""):
+            raise SpecInvalide(
+                f"Vue {self.name} : « {self.herite} » doit être un identifiant "
+                "externe complet, « module.identifiant ».")
+        if self.fields:
+            raise SpecInvalide(
+                f"Vue {self.name} : une greffe ne liste pas de champs — elle "
+                "décrit où insérer les siens. Utilisez « insertions ».")
+        if not self.insertions:
+            raise SpecInvalide(
+                f"Vue {self.name} : greffe sans insertion, elle ne ferait rien.")
+        for insertion in self.insertions:
+            insertion.valider(f"Vue {self.name}")
+
+    @property
+    def module_herite(self) -> str:
+        return (self.herite or "").split(".")[0]
 
 
 @dataclass
@@ -250,6 +322,27 @@ class Acces:
     def valider(self) -> None:
         if set(self.perms) - set("rwcd"):
             raise SpecInvalide(f"Droits invalides « {self.perms} » sur {self.model}.")
+
+
+def _vue(donnee: dict) -> Vue:
+    """Construit une vue, insertions comprises.
+
+    « Vue(**donnee) » laissait les insertions à l'état de dictionnaires : elles
+    passaient la validation sans être validées, et n'échouaient qu'au moment
+    d'écrire le XML, très loin de la faute.
+    """
+    if not isinstance(donnee, dict):
+        raise SpecInvalide("Chaque vue doit être un objet JSON.")
+    donnee = dict(donnee)
+    brutes = donnee.pop("insertions", [])
+    if not isinstance(brutes, list):
+        raise SpecInvalide("« insertions » doit être une liste.")
+    try:
+        insertions = [i if isinstance(i, Insertion) else Insertion(**i)
+                      for i in brutes]
+    except TypeError as erreur:
+        raise SpecInvalide(f"Insertion mal formée : {erreur}.")
+    return Vue(insertions=insertions, **donnee)
 
 
 @dataclass
@@ -336,7 +429,7 @@ class ModuleSpec:
                     )
                     for m in donnee.get("models", [])
                 ],
-                views=[Vue(**v) for v in donnee.get("views", [])],
+                views=[_vue(v) for v in donnee.get("views", [])],
                 actions=[Action(**a) for a in donnee.get("actions", [])],
                 menus=[Menu(**m) for m in donnee.get("menus", [])],
                 access=[Acces(**a) for a in donnee.get("access", [])],
@@ -345,6 +438,14 @@ class ModuleSpec:
             raise SpecInvalide(f"Clé obligatoire absente : {manquant}.")
         except TypeError as erreur:
             raise SpecInvalide(f"Spécification mal formée : {erreur}.")
+
+        # Greffer sur « hr.view_employee_form » exige « hr » : ce n'est pas une
+        # supposition, c'est la seule lecture possible. On l'ajoute donc plutôt
+        # que de renvoyer une spécification en correction pour une implication
+        # mécanique. Tout le reste continue d'être refusé plutôt que deviné.
+        for vue in spec.views:
+            if vue.est_greffe and vue.module_herite not in spec.depends:
+                spec.depends.append(vue.module_herite)
 
         spec.valider()
         return spec
@@ -375,6 +476,15 @@ class ModuleSpec:
 
         connus = {m.name for m in self.models}
         for vue in self.views:
+            if vue.est_greffe and vue.module_herite not in self.depends:
+                # Sans la dépendance, l'identifiant externe n'existe pas au
+                # moment du chargement : Odoo refuse l'installation avec
+                # « External ID not found », qui ne dit pas qu'il manque une
+                # ligne dans le manifeste.
+                raise SpecInvalide(
+                    f"La vue « {vue.name} » greffe sur « {vue.herite} » mais le "
+                    f"module « {vue.module_herite} » n'est pas dans les "
+                    "dépendances.")
             if vue.model not in connus and not self._vient_d_une_dependance(vue.model):
                 raise SpecInvalide(
                     f"La vue « {vue.name} » porte sur « {vue.model} », qui n'est ni "

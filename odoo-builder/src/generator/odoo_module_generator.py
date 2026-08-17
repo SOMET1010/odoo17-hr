@@ -250,7 +250,12 @@ class OdooModuleGenerator:
     # ------------------------------------------------------------------ vues
 
     def _identifiant_vue(self, vue: Vue) -> str:
-        return f"view_{vue.model.replace('.', '_')}_{vue.type}"
+        base = f"view_{vue.model.replace('.', '_')}_{vue.type}"
+        # Une greffe porte un identifiant distinct : sans cela, étendre une
+        # vue d'un module tiers ET en écrire une à soi sur le même modèle
+        # produisait deux records de même identifiant — le second écrasait le
+        # premier en silence, et l'écran manquant restait inexplicable.
+        return f"{base}_greffe" if vue.est_greffe else base
 
     def _vues(self, spec: ModuleSpec, vues: list[Vue], actions: list) -> str:
         blocs = ["<?xml version='1.0' encoding='utf-8'?>\n<odoo>\n"]
@@ -260,9 +265,17 @@ class OdooModuleGenerator:
             blocs.append(f'    <record id={quoteattr(identifiant)} model="ir.ui.view">\n')
             blocs.append(f'        <field name="name">{escape(vue.name)}</field>\n')
             blocs.append(f'        <field name="model">{escape(vue.model)}</field>\n')
+            if vue.est_greffe:
+                # « inherit_id » fait de ce record une GREFFE : Odoo n'affiche
+                # pas cette vue, il l'applique à celle qu'on désigne. Sans
+                # « ref », le module s'installe et rien n'apparaît — panne
+                # silencieuse s'il en est.
+                blocs.append(
+                    f'        <field name="inherit_id" ref={quoteattr(vue.herite)}/>\n')
             blocs.append('        <field name="arch" type="xml">\n')
             modele_lie = next((m for m in spec.models if m.name == vue.model), None)
-            blocs.append(self._arch(vue, modele_lie))
+            blocs.append(self._greffe(vue) if vue.est_greffe
+                         else self._arch(vue, modele_lie))
             blocs.append("        </field>\n    </record>\n\n")
 
         for action in actions:
@@ -284,6 +297,26 @@ class OdooModuleGenerator:
 
         blocs.append("</odoo>\n")
         return "".join(blocs)
+
+    def _greffe(self, vue: Vue) -> str:
+        """L'arch d'une vue héritée : des ancres, pas un écran.
+
+        On n'écrit pas de « xpath » : « <field name="x" position="after"> » est
+        l'idiome d'Odoo lui-même, il vise le champ où qu'il soit dans l'écran,
+        et il survit à un réagencement de la vue d'origine — ce qu'un chemin
+        XPath ne fait pas. Une greffe qui casse à chaque version d'Odoo est une
+        greffe qu'on finit par abandonner.
+        """
+        marge = " " * 12
+        morceaux = []
+        for insertion in vue.insertions:
+            morceaux.append(
+                f'{marge}<field name={quoteattr(insertion.ancre)} '
+                f'position={quoteattr(insertion.position)}>\n')
+            for nom in insertion.champs:
+                morceaux.append(f'{marge}    <field name={quoteattr(nom)}/>\n')
+            morceaux.append(f"{marge}</field>\n")
+        return "".join(morceaux)
 
     def _arch(self, vue: Vue, modele=None) -> str:
         marge = " " * 12

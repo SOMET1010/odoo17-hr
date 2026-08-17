@@ -263,6 +263,14 @@ class OdooStaticValidator:
         champs_par_modele = {
             m.name: {c.name for c in m.tous_les_champs} for m in spec.modeles_nouveaux
         }
+        # Sur un modèle ÉTENDU, on ne connaît que les champs qu'on lui ajoute :
+        # les autres appartiennent au module d'origine et nous sont invisibles.
+        # On ne peut donc rien dire de l'ancre — d'où la vérification limitée
+        # aux champs GREFFÉS, qui sont les nôtres et doivent exister.
+        champs_ajoutes = {
+            m.name: {c.name for c in m.tous_les_champs}
+            for m in spec.models if m.est_extension
+        }
 
         for chemin, contenu in fichiers.items():
             if not chemin.endswith(".xml"):
@@ -300,6 +308,30 @@ class OdooStaticValidator:
                                     "de charger cette vue",
                                 )
                             )
+
+                # Une greffe : les champs INSÉRÉS sont les nôtres, l'ancre
+                # est celle du module d'origine.
+                #
+                # CE QUI RESTE INVÉRIFIABLE ICI, ET IL FAUT LE DIRE : l'ancre.
+                # Si le champ visé n'existe pas dans la vue d'origine, Odoo
+                # refuse l'installation — « Element cannot be located in parent
+                # view » — et rien, hors d'un Odoo réel avec ce module
+                # installé, ne peut l'annoncer. La recette multi-versions
+                # l'éprouve ; ce contrôle-ci ne le prétend pas.
+                if record.find("./field[@name='inherit_id']") is not None:
+                    connus = champs_ajoutes.get(modele, set())
+                    for ancre in champs_vue:
+                        if not ancre.get("position"):
+                            continue
+                        for greffe in ancre.findall("field"):
+                            nom = greffe.get("name")
+                            if nom and nom not in connus:
+                                anomalies.append(Anomalie(
+                                    chemin,
+                                    f"la greffe sur « {modele} » insère "
+                                    f"« {nom} », que le module ne déclare pas : "
+                                    "Odoo refusera la vue"))
+                    continue
 
                 # Sur un modèle que le module crée, tout champ doit exister.
                 if modele in champs_par_modele:

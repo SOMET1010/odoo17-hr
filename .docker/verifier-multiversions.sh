@@ -70,6 +70,20 @@ docker compose exec -T odoo python3 -c \
 python3 odoo-builder/cli/verifier_cible.py "$SPEC" --cible "$CIBLE" 2>&1 | tee /tmp/mv-verdict.log
 code=${PIPESTATUS[0]}
 
+# Puis la GREFFE : un module qui n'invente aucun écran et s'accroche à celui
+# d'Odoo. C'est le seul contrôle possible de l'ancre — « work_email » vit dans
+# un module qu'on ne lit pas, et rien, hors d'un Odoo réel où « hr » est
+# installé, ne peut dire qu'elle existe. Une ancre fausse fait échouer
+# l'installation avec « Element cannot be located in parent view » ; ici, ça se
+# verra ici, pas chez l'utilisateur.
+if [[ "$code" -eq 0 ]]; then
+  titre "Greffe sur un module d'Odoo, en $CIBLE"
+  python3 odoo-builder/cli/verifier_cible.py \
+    odoo-builder/specs/extension_employe.json --cible "$CIBLE" 2>&1 \
+    | tee -a /tmp/mv-verdict.log
+  code=${PIPESTATUS[0]}
+fi
+
 # Puis la conversion : un module écrit à la mode d'Odoo 12, relu et installé
 # dans l'Odoo de la version visée. C'est la seule preuve qui vaille pour le
 # convertisseur — « la spécification se génère » ne dit rien de ce qu'Odoo en

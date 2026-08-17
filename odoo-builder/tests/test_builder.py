@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -3287,3 +3288,140 @@ class TestRouteDuModele(unittest.TestCase):
         code, donnee, _ = self._appel("/modele/essai", {})
         self.assertEqual(code, 400)
         self.assertIn("Aucun modèle", donnee["erreur"])
+
+
+class TestGreffeDeVue(unittest.TestCase):
+    """Étendre un module existant au lieu d'en refaire un.
+
+    C'est le besoin le plus souvent formulé, et celui qui manquait : sur le
+    parc de production, l'essentiel de ce qui n'était pas porté tenait à ce
+    que la spécification ne savait pas dire « ajoute ce champ à CET écran-là ».
+
+    C'est aussi la seule façon propre de toucher à un module qu'on n'a pas le
+    droit de recopier : on n'en reprend pas une ligne, on s'y accroche.
+    """
+
+    SOCLE = {
+        "technical_name": "ext_employe", "name": "Extension employé",
+        "cible": "17.0",
+        "models": [{"name": "hr.employee", "inherit": "hr.employee",
+                    "fields": [{"name": "x_matricule", "type": "char",
+                                "string": "Matricule"}]}],
+        "views": [{"model": "hr.employee", "type": "form", "name": "Employé étendu",
+                   "herite": "hr.view_employee_form",
+                   "insertions": [{"ancre": "work_email", "position": "after",
+                                   "champs": ["x_matricule"]}]}],
+    }
+
+    def _spec(self, **rectifs):
+        donnee = json.loads(json.dumps(self.SOCLE))
+        for chemin, valeur in rectifs.items():
+            donnee[chemin] = valeur
+        return ModuleSpec.depuis_dict(donnee)
+
+    def _xml(self, spec) -> str:
+        fichiers = OdooModuleGenerator().generate(spec)
+        return next(c for n, c in fichiers.items() if n.endswith(".xml"))
+
+    def test_la_dependance_est_deduite_de_la_greffe(self):
+        """Greffer sur « hr.… » exige « hr » : ce n'est pas une supposition.
+
+        Sans la dépendance, l'identifiant externe n'existe pas au chargement et
+        Odoo refuse l'installation avec « External ID not found » — message qui
+        ne dit pas qu'il manque une ligne au manifeste.
+        """
+        self.assertIn("hr", self._spec().depends)
+
+    def test_le_xml_est_une_greffe_et_pas_un_ecran(self):
+        xml = self._xml(self._spec())
+        self.assertIn('<field name="inherit_id" ref="hr.view_employee_form"/>', xml)
+        self.assertIn('<field name="work_email" position="after">', xml)
+        self.assertIn('<field name="x_matricule"/>', xml)
+        # Une greffe ne redéclare pas l'écran : ni <form>, ni <sheet>.
+        self.assertNotIn("<form", xml)
+        self.assertNotIn("<sheet", xml)
+
+    def test_l_ancre_est_un_nom_de_champ_jamais_un_chemin(self):
+        """Un chemin XPath décrit la forme de l'écran, qui change à chaque
+        version d'Odoo et à chaque module installé à côté. Un nom de champ
+        décrit le métier, et survit."""
+        self.assertNotIn("xpath", self._xml(self._spec()))
+
+    def test_une_greffe_et_une_vue_propre_ne_se_marchent_pas_dessus(self):
+        """Deux records de même identifiant : le second écrase le premier, en
+        silence, et l'écran manquant reste inexplicable."""
+        spec = self._spec(views=[
+            self.SOCLE["views"][0],
+            {"model": "hr.employee", "type": "form", "name": "À moi",
+             "fields": ["x_matricule"]},
+        ])
+        xml = self._xml(spec)
+        identifiants = re.findall(r'<record id="([^"]+)" model="ir\.ui\.view"', xml)
+        self.assertEqual(len(identifiants), len(set(identifiants)), identifiants)
+
+    def test_remplacer_n_est_pas_proposé(self):
+        """« replace » casse silencieusement les modules accrochés à côté, et
+        le jour où ça se voit, personne ne sait plus qui a retiré quoi."""
+        from spec.module_spec import POSITIONS
+        self.assertNotIn("replace", POSITIONS)
+        with self.assertRaises(SpecInvalide):
+            self._spec(views=[{
+                "model": "hr.employee", "type": "form", "name": "V",
+                "herite": "hr.view_employee_form",
+                "insertions": [{"ancre": "work_email", "position": "replace",
+                                "champs": ["x_matricule"]}]}])
+
+    def test_une_greffe_sans_insertion_est_refusee(self):
+        with self.assertRaises(SpecInvalide) as boite:
+            self._spec(views=[{"model": "hr.employee", "type": "form", "name": "V",
+                               "herite": "hr.view_employee_form"}])
+        self.assertIn("ne ferait rien", str(boite.exception))
+
+    def test_un_identifiant_sans_module_est_refuse(self):
+        """« view_employee_form » ne désigne rien hors du module courant."""
+        with self.assertRaises(SpecInvalide) as boite:
+            self._spec(views=[{
+                "model": "hr.employee", "type": "form", "name": "V",
+                "herite": "view_employee_form",
+                "insertions": [{"ancre": "work_email", "champs": ["x_matricule"]}]}])
+        self.assertIn("module.identifiant", str(boite.exception))
+
+    def test_une_greffe_ne_liste_pas_de_champs(self):
+        """Les deux formes ne se mélangent pas : l'une décrit un écran,
+        l'autre où s'accrocher."""
+        with self.assertRaises(SpecInvalide):
+            self._spec(views=[{
+                "model": "hr.employee", "type": "form", "name": "V",
+                "herite": "hr.view_employee_form", "fields": ["x_matricule"],
+                "insertions": [{"ancre": "work_email", "champs": ["x_matricule"]}]}])
+
+    def test_le_validateur_refuse_un_champ_greffe_non_declare(self):
+        spec = self._spec(views=[{
+            "model": "hr.employee", "type": "form", "name": "V",
+            "herite": "hr.view_employee_form",
+            "insertions": [{"ancre": "work_email", "champs": ["x_absent"]}]}])
+        rapport = OdooStaticValidator().check(
+            OdooModuleGenerator().generate(spec), spec)
+        self.assertFalse(rapport.ok)
+        self.assertIn("x_absent", rapport.texte())
+
+    def test_la_greffe_tient_sur_les_trois_versions(self):
+        """Rien ici n'est propre à une version — mais on le vérifie plutôt que
+        de le supposer : c'est ce genre de supposition qui a fait découvrir que
+        « tree » devenait « list » en 18."""
+        for cible in ("17.0", "18.0", "19.0"):
+            spec = self._spec(cible=cible)
+            xml = self._xml(spec)
+            self.assertIn('ref="hr.view_employee_form"', xml)
+            manifeste = next(c for n, c in
+                             OdooModuleGenerator().generate(spec).items()
+                             if n.endswith("__manifest__.py"))
+            self.assertIn(f"'{cible.split('.')[0]}.0.1.0.0'", manifeste)
+
+    def test_le_modele_etendu_ne_reclame_pas_de_droits(self):
+        """Les droits appartiennent au module d'origine : en réécrire pour un
+        modèle qu'on ne crée pas, c'est en changer l'accès à son insu."""
+        fichiers = OdooModuleGenerator().generate(self._spec())
+        droits = next((c for n, c in fichiers.items()
+                       if n.endswith("ir.model.access.csv")), "")
+        self.assertNotIn("hr_employee", droits)
