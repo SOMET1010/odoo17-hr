@@ -61,8 +61,11 @@ import os
 import sys
 import shutil
 import tempfile
+import threading
+import time
 import urllib.request
 import zipfile
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -101,27 +104,86 @@ from validator.odoo_static_validator import OdooStaticValidator  # noqa: E402
 from interface_web import PAGE  # noqa: E402
 
 
+# Le compte que sert la requête EN COURS, propre à chaque fil d'exécution.
+# Le serveur est multi-fils : une variable ordinaire serait écrasée par la
+# requête d'un autre utilisateur au milieu de la nôtre.
+_courant = threading.local()
+
+
+@dataclass
+class Piece:
+    """Ce sur quoi UNE personne travaille en ce moment.
+
+    L'Atelier fabrique deux choses très différentes — un module métier et un
+    thème — mais chacun ne fait qu'une chose à la fois. Une seule pièce
+    « courante » évite qu'un aperçu de thème ouvre l'archive d'un module.
+    """
+
+    spec: ModuleSpec | None = None
+    charte: Charte | None = None
+    courant: str = ""                 # « module » ou « theme »
+    projet: str | None = None         # l'identifiant en cours
+    cible_courante: str = "17.0"
+    journal: list = field(default_factory=list)
+    # Où en est une conception longue, pour qu'une autre requête puisse le
+    # lire et l'afficher. Pas dans le fil d'exécution : c'est justement un
+    # AUTRE appel qui vient le consulter.
+    progres: dict = field(default_factory=dict)
+
+
 class Atelier:
-    """L'état de la session : une spécification à la fois."""
+    """Les services partagés, et une pièce de travail PAR COMPTE.
+
+    LE DÉFAUT QUE CETTE SÉPARATION CORRIGE. Tout vivait dans un seul objet,
+    partagé par le processus entier. Tant qu'il n'y avait qu'un poste, cela ne
+    se voyait pas. Dès qu'il y a des comptes, deux personnes se marchent
+    dessus : la spécification de l'une devient l'aperçu de l'autre, et
+    « /module.zip » sert l'archive du dernier arrivé. Le refus « ce projet ne
+    vous appartient pas » n'était que le symptôme visible — le plus bénin.
+
+    Ce qui reste PARTAGÉ est ce qui doit l'être : le dépôt, les comptes, les
+    réglages, les notifications. Ce qui devient PROPRE À CHACUN est l'état de
+    travail.
+    """
 
     def __init__(self):
-        self.spec: ModuleSpec | None = None
-        # L'Atelier fabrique deux choses très différentes — un module métier
-        # et un thème — mais l'utilisateur ne fait qu'une chose à la fois.
-        # Une seule pièce « courante » évite qu'un aperçu de thème ouvre
-        # l'archive d'un module, ce qui serait la pire des confusions.
-        self.charte: Charte | None = None
-        self.courant: str = ""            # « module » ou « theme »
-        self.projet: str | None = None    # l'identifiant en cours
         self.depot = Depot()
         self.comptes = Comptes(self.depot.chemin)
         self.reglages = Reglages(self.depot.chemin)
         self.notifications = Notifications(self.depot.chemin)
-        # Le compte qui travaille. Vide en local sans comptes : les projets
-        # appartiennent alors au « poste », ce qui est exactement ce qu'on
-        # veut d'un outil personnel.
-        self.compte = ""
-        self.journal: list[str] = []
+        self._pieces: dict[str, Piece] = {}
+        self._verrou = threading.Lock()
+
+    # -------------------------------------------------- la pièce du moment
+
+    @property
+    def compte(self) -> str:
+        """Le compte servi par CETTE requête. Vide en local sans comptes :
+        les projets appartiennent alors au « poste »."""
+        return getattr(_courant, "compte", "")
+
+    @compte.setter
+    def compte(self, identifiant: str) -> None:
+        _courant.compte = identifiant or ""
+
+    def piece(self) -> Piece:
+        with self._verrou:
+            return self._pieces.setdefault(self.compte, Piece())
+
+    def __getattr__(self, nom):
+        # Les attributs de travail sont lus sur la pièce du compte courant.
+        # Passer par « __getattr__ » évite de réécrire les cent points d'appel
+        # — et surtout d'en oublier un, qui resterait partagé sans que rien ne
+        # le montre.
+        if nom in Piece.__annotations__:
+            return getattr(self.piece(), nom)
+        raise AttributeError(nom)
+
+    def __setattr__(self, nom, valeur):
+        if nom in Piece.__annotations__:
+            setattr(self.piece(), nom, valeur)
+        else:
+            object.__setattr__(self, nom, valeur)
 
     @staticmethod
     def maintenant() -> str:
@@ -154,7 +216,28 @@ class Atelier:
             pass
 
     def noter(self, ligne: str) -> None:
-        self.journal.append(str(ligne).rstrip())
+        ligne = str(ligne).rstrip()
+        self.journal.append(ligne)
+        # Chaque ligne du journal est aussi un point d'avancement : c'est le
+        # rédacteur lui-même qui les émet — « tentative 2/3 », « refusée par le
+        # validateur ». Les recopier ici évite d'inventer une seconde
+        # comptabilité, qui mentirait dès qu'on toucherait à la première.
+        avance = dict(self.progres)
+        if avance.get("actif"):
+            avance["etape"] = ligne
+            avance["lignes"] = len(self.journal)
+            self.progres = avance
+
+    def commencer(self, quoi: str) -> None:
+        """Ouvre une opération longue, visible depuis une AUTRE requête."""
+        self.journal = []
+        self.progres = {"actif": True, "quoi": quoi, "etape": "En cours…",
+                        "debut": time.time(), "lignes": 0}
+
+    def terminer(self, motif: str = "") -> None:
+        avance = dict(self.progres)
+        avance.update({"actif": False, "fin": time.time(), "motif": motif})
+        self.progres = avance
 
     # ------------------------------------------------------------ conception
 
@@ -196,6 +279,7 @@ class Atelier:
         return fournisseur_configure(journal)
 
     def concevoir(self, besoin: str, cible: str) -> dict:
+        self.commencer("Conception de la spécification")
         fournisseur = self.fournisseur(self.noter)
         if fournisseur is None:
             raise RuntimeError(
@@ -597,6 +681,14 @@ class Poignee(BaseHTTPRequestHandler):
                     "erreur": "Réservé aux administrateurs."})
             return self._json(200, {
                 "comptes": self.atelier.comptes.journal_des_comptes()})
+        if chemin == "/progres":
+            # Lue en boucle par la page pendant une conception : elle ne
+            # touche à rien et ne coûte qu'une lecture mémoire.
+            avance = dict(self.atelier.progres)
+            if avance.get("debut"):
+                avance["secondes"] = round(
+                    (avance.get("fin") or time.time()) - avance["debut"])
+            return self._json(200, avance)
         if chemin == "/projets":
             return self._json(200, {
                 "projets": [p.en_dict()
@@ -695,7 +787,6 @@ class Poignee(BaseHTTPRequestHandler):
         if cible not in CIBLES:
             return self._json(400, {"erreur": f"cible inconnue « {cible} »"})
 
-        self.atelier.journal = []
         self.atelier.cible_courante = cible
         try:
             if chemin == "/concevoir":
@@ -715,6 +806,7 @@ class Poignee(BaseHTTPRequestHandler):
                     return self._json(403, {
                         "erreur": "Sur une instance en ligne, envoyez une "
                                   "archive : le chemin désignerait le serveur."})
+                self.atelier.commencer("Lecture du module")
                 resultat = self.atelier.convertir(donnee.get("chemin") or "", cible)
             elif chemin == "/projet/ouvrir":
                 # La cible du corps est IGNORÉE : un projet porte la sienne.
@@ -742,6 +834,9 @@ class Poignee(BaseHTTPRequestHandler):
         except (RedactionImpossible, ConversionImpossible, SpecInvalide,
                 ThemeInvalide, ProjetInaccessible, RuntimeError,
                 FileNotFoundError) as erreur:
+            # Sans cela, une conception qui échoue laisse la jauge tourner
+            # indéfiniment — et l'utilisateur attend un résultat déjà perdu.
+            self.atelier.terminer(str(erreur)[:120])
             # La même traduction que pour « Éprouver ». Un refus du
             # fournisseur arrivait ici tel quel — « 401 Unauthorized —
             # Invalid Authentication » — ce qui est exact et n'apprend rien :
@@ -750,13 +845,14 @@ class Poignee(BaseHTTPRequestHandler):
             # précisément à l'endroit où il travaille.
             return self._json(400, {"erreur": self._lisible(erreur),
                                     "journal": self.atelier.journal})
+        self.atelier.terminer()
         resultat["journal"] = self.atelier.journal
         return self._json(200, resultat)
 
 
     def _televerser(self):
         """Recevoir une archive et la convertir."""
-        self.atelier.journal = []
+        self.atelier.commencer("Lecture de l'archive")
         taille = int(self.headers.get("Content-Length") or 0)
         if taille > self.atelier.TAILLE_MAX + 8192:
             self.rfile.read(taille)            # vider avant de refuser
@@ -796,6 +892,7 @@ class Poignee(BaseHTTPRequestHandler):
                 SpecInvalide) as erreur:
             return self._json(400, {"erreur": str(erreur),
                                     "journal": self.atelier.journal})
+        self.atelier.terminer()
         resultat["journal"] = self.atelier.journal
         return self._json(200, resultat)
 

@@ -4299,3 +4299,140 @@ class TestPlusieursCles(unittest.TestCase):
                                              "modele": "m", "cle": "x" * 12,
                                              "id": "peu-importe"})
             self.assertEqual(code, 403, route)
+
+
+class TestChacunSaPiece(unittest.TestCase):
+    """Deux personnes ne travaillent pas sur la même pièce.
+
+    LE DÉFAUT : tout l'état de travail vivait dans un seul objet, partagé par
+    le processus. Tant qu'il n'y avait qu'un poste, cela ne se voyait pas. Dès
+    qu'il y a des comptes, la spécification de l'un devient l'aperçu de
+    l'autre, et « /module.zip » sert l'archive du dernier arrivé. Le refus
+    « ce projet ne vous appartient pas » n'en était que le symptôme visible —
+    et le plus bénin.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    SPEC = {
+        "technical_name": "a_moi", "name": "À moi", "cible": "17.0",
+        "models": [{"name": "moi.chose", "description": "Chose",
+                    "fields": [{"name": "name", "type": "char",
+                                "string": "Nom", "required": True}]}],
+        "views": [{"model": "moi.chose", "type": "form", "name": "Chose",
+                   "fields": ["name"]}],
+    }
+
+    def _ouvrir_un_second_compte(self):
+        self._appel("/inscription/reglage", {"mode": "libre"})
+        patron = self.jeton
+        self.jeton = ""
+        self._appel("/inscription", {"nom": "awa",
+                                     "motdepasse": "la-phrase-que-je-choisis"})
+        return patron, self.jeton
+
+    def test_la_specification_de_l_un_n_est_pas_l_apercu_de_l_autre(self):
+        self._premier_compte()
+        patron, autre = self._ouvrir_un_second_compte()
+
+        self.jeton = patron
+        code, _, _ = self._appel("/charger", {"specification": self.SPEC})
+        self.assertEqual(code, 200)
+
+        # L'autre compte n'a rien chargé : il ne doit RIEN voir.
+        self.jeton = autre
+        code, _, _ = self._appel("/apercu.html")
+        self.assertEqual(code, 404)
+        code, _, _ = self._appel("/module.zip")
+        self.assertEqual(code, 404)
+
+        # Et le premier retrouve la sienne, intacte.
+        self.jeton = patron
+        code, corps, _ = self._appel("/module.zip")
+        self.assertEqual(code, 200)
+        with zipfile.ZipFile(io.BytesIO(corps)) as z:
+            self.assertIn("a_moi/__manifest__.py", z.namelist())
+
+    def test_le_projet_courant_de_l_un_ne_gene_pas_l_autre(self):
+        """C'est l'erreur qu'on a vue : « le projet X ne vous appartient pas »,
+        alors qu'on ne l'avait jamais ouvert — c'était celui d'un autre,
+        resté « courant » dans l'état partagé."""
+        self._premier_compte()
+        patron, autre = self._ouvrir_un_second_compte()
+
+        self.jeton = patron
+        self._appel("/charger", {"specification": self.SPEC})
+
+        self.jeton = autre
+        code, donnee, _ = self._appel("/charger", {"specification": self.SPEC})
+        self.assertEqual(code, 200, donnee)
+        _, liste, _ = self._appel("/projets")
+        self.assertEqual(len(liste["projets"]), 1)
+
+    def test_le_journal_de_l_un_n_est_pas_celui_de_l_autre(self):
+        self._premier_compte()
+        patron, autre = self._ouvrir_un_second_compte()
+        self.jeton = patron
+        _, donnee, _ = self._appel("/charger", {"specification": self.SPEC})
+        self.assertTrue(donnee["journal"])
+        self.jeton = autre
+        _, avance, _ = self._appel("/progres")
+        self.assertFalse(avance.get("actif"))
+
+
+class TestJauge(unittest.TestCase):
+    """Savoir qu'il se passe quelque chose, et quoi.
+
+    Une conception prend de dix à soixante secondes. Sans rien à l'écran, on
+    croit que c'est bloqué, on reclique, et on double la charge.
+    """
+
+    CODE = "code-de-recette"
+
+    setUp = TestRouteDuModele.setUp
+    _appel = TestAtelierEnLigne._appel
+    _premier_compte = TestAtelierEnLigne._premier_compte
+
+    def test_l_avancement_est_lisible_pendant_l_operation(self):
+        """La lecture vient d'une AUTRE requête que celle qui travaille :
+        c'est tout l'enjeu, et c'est pourquoi l'avancement ne peut pas vivre
+        dans le fil d'exécution."""
+        import atelier as module
+        self._premier_compte()
+        atelier = module.Poignee.atelier
+        # On se place SUR LE COMPTE qui travaille : l'avancement est rangé par
+        # compte, et c'est justement ce qui permet à une autre requête du même
+        # compte de le lire — sans jamais voir celui d'un voisin.
+        _, sante, _ = self._appel("/sante")
+        atelier.compte = sante["compte"]["id"]
+        atelier.commencer("Conception de la spécification")
+        atelier.noter("tentative 1/3")
+
+        _, avance, _ = self._appel("/progres")
+        self.assertTrue(avance["actif"])
+        self.assertEqual(avance["quoi"], "Conception de la spécification")
+        self.assertEqual(avance["etape"], "tentative 1/3")
+        self.assertIn("secondes", avance)
+
+        atelier.terminer()
+        _, avance, _ = self._appel("/progres")
+        self.assertFalse(avance["actif"])
+
+    def test_un_echec_arrete_la_jauge(self):
+        """Sinon elle tourne indéfiniment, et l'on attend un résultat déjà
+        perdu."""
+        garde = {c: os.environ.pop(c, None)
+                 for c in ("BUILDER_IA_CLE", "OPENAI_API_KEY")}
+        self.addCleanup(lambda: [os.environ.__setitem__(c, v)
+                                 for c, v in garde.items() if v is not None])
+        self._premier_compte()
+        code, _, _ = self._appel("/concevoir",
+                                 {"besoin": "un besoin bien assez long pour passer"})
+        self.assertEqual(code, 400)
+        _, avance, _ = self._appel("/progres")
+        self.assertFalse(avance["actif"])
+        self.assertTrue(avance.get("motif"))

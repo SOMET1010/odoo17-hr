@@ -99,6 +99,12 @@ details summary{cursor:pointer;font-size:.8rem;color:var(--doux)}
   font-size:.76rem;padding:4px 10px}
 pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
   background:var(--violet-clair);padding:11px;border-radius:4px;margin:8px 0 0}
+/* Une barre qui va et vient, pas une progression chiffrée : on ne sait pas
+   combien de temps un modèle mettra, et afficher « 60 % » serait inventer. Ce
+   qu'on montre de vrai, c'est l'ÉTAPE et le temps écoulé. */
+@keyframes glisser{
+  0%{margin-left:0;width:25%} 50%{margin-left:60%;width:40%}
+  100%{margin-left:0;width:25%}}
 </style>
 </head>
 <body>
@@ -323,6 +329,22 @@ pre{font-family:var(--mono);font-size:.72rem;overflow:auto;max-height:280px;
       <button type="button" class="second" id="c-fermer">Fermer</button>
     </div>
   </form>
+</div>
+
+<div id="jauge" class="carte" hidden
+     style="position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+            z-index:9;width:min(560px,92vw);box-shadow:0 6px 24px rgba(0,0,0,.18)">
+  <div style="display:flex;align-items:baseline;gap:10px">
+    <b id="jauge-quoi" style="font-size:.9rem"></b>
+    <span class="etat" id="jauge-temps" style="margin-left:auto;color:var(--doux);
+          font-family:var(--mono);font-size:.74rem"></span>
+  </div>
+  <div style="height:4px;background:var(--violet-clair);border-radius:2px;
+              overflow:hidden">
+    <div id="jauge-barre" style="height:100%;width:30%;background:var(--violet);
+         border-radius:2px;animation:glisser 1.4s ease-in-out infinite"></div>
+  </div>
+  <p class="pied" id="jauge-etape" style="margin:0"></p>
 </div>
 
 <main id="atelier" hidden>
@@ -610,8 +632,11 @@ $('#nouveau').addEventListener('click', async () => {
   listerProjets();
 });
 
-$('#concevoir').addEventListener('click', e =>
-  appeler('/concevoir', {besoin: $('#besoin').value}, e.target));
+$('#concevoir').addEventListener('click', e => {
+  demarrerJauge('Conception de la spécification');
+  appeler('/concevoir', {besoin: $('#besoin').value}, e.target)
+    .finally(arreterJauge);
+});
 $('#envoyer').addEventListener('click', async evenement => {
   const fichier = $('#archive').files[0];
   if (!fichier) { afficherErreur('Choisissez une archive ZIP.'); return; }
@@ -622,6 +647,7 @@ $('#envoyer').addEventListener('click', async evenement => {
     const formulaire = new FormData();
     formulaire.append('cible', $('#cible').value);
     formulaire.append('archive', fichier);
+    demarrerJauge("Lecture de l'archive");
     const reponse = await fetch('/televerser', {method: 'POST', body: formulaire});
     if (reponse.status === 401) { location.reload(); return; }
     const donnee = await reponse.json();
@@ -630,11 +656,17 @@ $('#envoyer').addEventListener('click', async evenement => {
     afficherResume(donnee); listerProjets();
   } catch (e) {
     afficherErreur("L'envoi a échoué : " + e.message);
-  } finally { bouton.disabled = false; bouton.textContent = libelle; }
+  } finally {
+    arreterJauge();
+    bouton.disabled = false; bouton.textContent = libelle;
+  }
 });
 
-$('#convertir').addEventListener('click', e =>
-  appeler('/convertir', {chemin: $('#chemin').value}, e.target));
+$('#convertir').addEventListener('click', e => {
+  demarrerJauge('Lecture du module');
+  appeler('/convertir', {chemin: $('#chemin').value}, e.target)
+    .finally(arreterJauge);
+});
 $('#telecharger').addEventListener('click', () => { location.href = '/module.zip'; });
 $('#onglet').addEventListener('click', () => window.open('/apercu.html', '_blank'));
 
@@ -796,6 +828,37 @@ function remplirChoix(s) {
     }
   }
   if ($('#t-densite').querySelector('[value=normale]')) $('#t-densite').value = 'normale';
+}
+
+/* --------------------------------------------------------------- jauge */
+
+let SUIVI = null;
+
+async function suivre() {
+  try {
+    const reponse = await fetch('/progres');
+    if (!reponse.ok) return;
+    const a = await reponse.json();
+    if (!a.actif) { arreterJauge(); return; }
+    $('#jauge').hidden = false;
+    $('#jauge-quoi').textContent = a.quoi || 'En cours';
+    $('#jauge-temps').textContent = (a.secondes || 0) + ' s';
+    $('#jauge-etape').textContent = a.etape || '';
+  } catch (e) { /* une jauge ne doit jamais casser ce qu'elle observe */ }
+}
+
+function demarrerJauge(quoi) {
+  $('#jauge').hidden = false;
+  $('#jauge-quoi').textContent = quoi;
+  $('#jauge-temps').textContent = '0 s';
+  $('#jauge-etape').textContent = 'Envoi de la demande…';
+  if (SUIVI) clearInterval(SUIVI);
+  SUIVI = setInterval(suivre, 1200);
+}
+
+function arreterJauge() {
+  if (SUIVI) { clearInterval(SUIVI); SUIVI = null; }
+  $('#jauge').hidden = true;
 }
 
 /* --------------------------------------------------------- mot de passe */
