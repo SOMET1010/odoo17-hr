@@ -129,18 +129,31 @@ titre "4. Secrets"
 # sans erreur depuis une console.
 hasard() { head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c "${1:-24}"; }
 
+# Lire un réglage SANS l'exécuter. « source » sur un fichier de configuration
+# fait de chaque ligne une commande : « ATELIER_ACME_EMAIL=email vous@ex.fr »
+# posait la variable à « email », puis tentait de lancer votre adresse comme un
+# programme. Un fichier de réglages ne doit rien pouvoir exécuter — et cette
+# lecture-ci accepte aussi bien les valeurs entre guillemets que sans.
+lire_reglage() {                       # lire_reglage FICHIER CLÉ
+  [[ -f "$1" ]] || return 0
+  sed -n "s/^$2=//p" "$1" | tail -1 | sed -e 's/^"//' -e 's/"$//'
+}
+
+ATELIER_INSCRIPTION="$(lire_reglage .env.atelier ATELIER_INSCRIPTION)"
 if [[ -f .env.atelier ]]; then
   ok "configuration existante conservée : .env.atelier"
-  # shellcheck disable=SC1091
-  . ./.env.atelier
   # Ce qui n'est pas redonné en option est REPRIS du fichier. Sans cela, une
   # relance pour changer de domaine effacerait la clé d'IA et le code
   # d'installation — et le code, lui, ne se retrouve nulle part.
-  CLE_IA="${CLE_IA:-${BUILDER_IA_CLE:-}}"
-  URL_IA="${URL_IA:-${BUILDER_IA_URL:-}}"
-  MODELE_IA="${MODELE_IA:-${BUILDER_IA_MODELE:-}}"
-  COURRIEL="${COURRIEL:-${ATELIER_ACME_EMAIL#email }}"
-else
+  CLE_IA="${CLE_IA:-$(lire_reglage .env.atelier BUILDER_IA_CLE)}"
+  URL_IA="${URL_IA:-$(lire_reglage .env.atelier BUILDER_IA_URL)}"
+  MODELE_IA="${MODELE_IA:-$(lire_reglage .env.atelier BUILDER_IA_MODELE)}"
+  COURRIEL="${COURRIEL:-$(lire_reglage .env.atelier ATELIER_ACME_EMAIL | sed 's/^email //')}"
+fi
+if [[ -z "$ATELIER_INSCRIPTION" ]]; then
+  # Absent du fichier, ou fichier neuf. En tirer un nouveau n'ouvre rien :
+  # il ne sert qu'au PREMIER compte, et dès qu'un compte existe l'Atelier
+  # cesse de le réclamer.
   ATELIER_INSCRIPTION=$(hasard 24)
   if [[ -z "$CLE_IA" && "$SANS_QUESTION" == "0" ]]; then
     printf '\n  Clé du service d'"'"'IA qui rédigera les spécifications.\n'
@@ -152,15 +165,18 @@ fi
 umask 077
 {
   echo "# Écrit par deployer/installer-atelier.sh. Contient des secrets."
-  echo "ATELIER_DOMAINE=$DOMAINE"
-  echo "ATELIER_INSCRIPTION=$ATELIER_INSCRIPTION"
-  [[ -n "$CLE_IA" ]] && echo "BUILDER_IA_CLE=$CLE_IA"
-  [[ -n "$URL_IA" ]] && echo "BUILDER_IA_URL=$URL_IA"
-  [[ -n "$MODELE_IA" ]] && echo "BUILDER_IA_MODELE=$MODELE_IA"
+  # Entre guillemets : docker compose les retire à la lecture, et une valeur
+  # à espaces — « email vous@exemple.fr » — cesse d'être un piège pour qui
+  # relirait ce fichier avec un shell.
+  echo "ATELIER_DOMAINE=\"$DOMAINE\""
+  echo "ATELIER_INSCRIPTION=\"$ATELIER_INSCRIPTION\""
+  [[ -n "$CLE_IA" ]] && echo "BUILDER_IA_CLE=\"$CLE_IA\""
+  [[ -n "$URL_IA" ]] && echo "BUILDER_IA_URL=\"$URL_IA\""
+  [[ -n "$MODELE_IA" ]] && echo "BUILDER_IA_MODELE=\"$MODELE_IA\""
   # Directive complète, ou rien : « email » sans argument empêche Caddy de
   # démarrer, en boucle, et une variable définie mais vide ne prend pas son
   # défaut.
-  [[ -n "$COURRIEL" ]] && echo "ATELIER_ACME_EMAIL=email $COURRIEL"
+  [[ -n "$COURRIEL" ]] && echo "ATELIER_ACME_EMAIL=\"email $COURRIEL\""
 } > .env.atelier
 chmod 600 .env.atelier
 ok "secrets écrits dans .env.atelier (600)"
